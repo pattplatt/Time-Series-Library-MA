@@ -1,12 +1,12 @@
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 python -u run.py \
   --task_name anomaly_detection \
   --is_training 1 \
-  --root_path ./dataset/SWaT \
-  --model_id SWAT \
+  --root_path ./dataset/WADI \
+  --model_id WADI \
   --model Autoformer \
-  --data SWAT \
+  --data WADI \
   --features M \
   --seq_len 100 \
   --pred_len 0 \
