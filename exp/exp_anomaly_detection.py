@@ -3,8 +3,8 @@ from exp.exp_basic import Exp_Basic
 from utils.tools import EarlyStopping, adjust_learning_rate, adjustment
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
+from sklearn.metrics import confusion_matrix
 import torch.multiprocessing
-
 torch.multiprocessing.set_sharing_strategy('file_system')
 import torch
 import torch.nn as nn
@@ -191,17 +191,21 @@ class Exp_Anomaly_Detection(Exp_Basic):
         print("gt:   ", gt.shape)
 
         accuracy = accuracy_score(gt, pred)
+        cm = confusion_matrix(gt, pred)
+
         precision, recall, f_score, support = precision_recall_fscore_support(gt, pred, average='binary')
         print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
             accuracy, precision,
             recall, f_score))
+        # Compute the confusion matrix
+        print("Confusion Matrix:")
+        print(cm)
 
-        f = open("result_anomaly_detection.txt", 'a')
-        f.write(setting + "  \n")
-        f.write("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
+        with open("result_anomaly_detection.csv", 'a') as f:
+            f.write(setting + "  \n")
+            f.write("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}, Cm : {cm}".format(
             accuracy, precision,
             recall, f_score))
-        f.write('\n')
-        f.write('\n')
-        f.close()
+            f.write('\n')
+            f.write('\n')
         return
