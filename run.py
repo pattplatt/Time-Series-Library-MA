@@ -186,10 +186,10 @@ if __name__ == '__main__':
                 args.des, ii)
 
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-            exp.train(setting)
+            _, train, val, test = exp.train(setting)
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting)
+            exp.test(setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed)
             torch.cuda.empty_cache()
     else:
         ii = 0

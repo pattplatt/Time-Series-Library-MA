@@ -13,6 +13,9 @@ import os
 import time
 import warnings
 import numpy as np
+from datetime import datetime
+import csv
+
 
 warnings.filterwarnings('ignore')
 
@@ -123,9 +126,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
-        return self.model
-
-    def test(self, setting, test=0):
+        return self.model, train_loss, vali_loss, test_loss
+    def test(self, setting,train_loss, vali_loss, test_loss,model,seq_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed, test=0):
         test_data, test_loader = self._get_data(flag='test')
         train_data, train_loader = self._get_data(flag='train')
         if test:
@@ -200,12 +202,16 @@ class Exp_Anomaly_Detection(Exp_Basic):
         # Compute the confusion matrix
         print("Confusion Matrix:")
         print(cm)
+        
+        # Get the current date and time
+        now = datetime.now()
+        date_time_str = now.strftime("%Y-%m-%d_%H-%M")
+        #pred_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed
 
-        with open("result_anomaly_detection.csv", 'a') as f:
-            f.write(setting + "  \n")
-            f.write("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}, Cm : {cm}".format(
-            accuracy, precision,
-            recall, f_score))
-            f.write('\n')
-            f.write('\n')
+        metrics = [["Model","Accuracy", "Precision","Recall","F-score","Cm","Train loss","Vali loss","Test loss","Seq len","Dim Model","E layers","Dim ff","n_heads","Train epochs","Loss","Learning rate","Anomaly ratio","embed"],[model,accuracy,precision,recall,f_score,cm,train_loss,vali_loss,test_loss,seq_len,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed]]
+
+        with open(folder_path+"results"+"_"+date_time_str+".csv", 'a',newline='') as f:
+            writer = csv.writer(f)
+            for row in metrics:
+                writer.writerow(row)
         return

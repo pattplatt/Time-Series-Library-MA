@@ -12,6 +12,7 @@ from data_provider.uea import subsample, interpolate_missing, Normalizer
 from sktime.datasets import load_from_tsfile_to_dataframe
 import warnings
 from utils.augmentation import run_augmentation_single
+from sklearn.preprocessing import MinMaxScaler, RobustScaler, PowerTransformer
 
 warnings.filterwarnings('ignore')
 
@@ -752,10 +753,11 @@ class WADISegLoader(Dataset):
         self.flag = flag
         self.step = step
         self.win_size = win_size
-        self.scaler = StandardScaler()
+        self.scaler = PowerTransformer(method='yeo-johnson')  # Use MinMaxScaler with feature_range set to (-1, 1)
+        #self.scaler = StandardScaler()
         data = np.load(os.path.join(root_path, "WADI_train.npy"))
         self.scaler.fit(data)
-        data = self.scaler.transform(data)
+        data = self.scaler.transform(data)        
         test_data = np.load(os.path.join(root_path, "WADI_test.npy"))
         self.test = self.scaler.transform(test_data)
         self.train = data
