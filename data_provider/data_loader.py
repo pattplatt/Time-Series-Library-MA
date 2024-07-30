@@ -778,6 +778,10 @@ class WADISegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.step + 1
         else:
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
+        
+    #In summary, this line of code calculates the total number of training windows or batches that can be extracted from the training data, 
+    # given the window size and step size. This is crucial for batch-wise training in machine learning, where the model is iteratively 
+    # trained on small segments of the data.
 
     def __getitem__(self, index):
         index = index * self.step
