@@ -13,6 +13,9 @@ import os
 import time
 import warnings
 import numpy as np
+from datetime import datetime
+import csv
+
 
 warnings.filterwarnings('ignore')
 
@@ -64,18 +67,29 @@ class Exp_Anomaly_Detection(Exp_Basic):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
+        
+        now = datetime.now()
+        date_time_str = now.strftime("%Y-%m-%d_%H-%M")
+    
+        folder_path = './test_results/' + setting + date_time_str +'/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+        metrics = {'epoch': [],'iters': [], 'loss': []}
 
+        
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
 
         time_now = time.time()
+        training_start_time=time.time()
 
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        total_iters=0
 
         for epoch in range(self.args.train_epochs):
             iter_count = 0
@@ -85,6 +99,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
             epoch_time = time.time()
             for i, (batch_x, batch_y) in enumerate(train_loader):
                 iter_count += 1
+                total_iters +=1
                 model_optim.zero_grad()
 
                 batch_x = batch_x.float().to(self.device)
@@ -103,6 +118,9 @@ class Exp_Anomaly_Detection(Exp_Basic):
                     print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                     iter_count = 0
                     time_now = time.time()
+                    metrics['epoch'].append(epoch + 1)
+                    metrics['iters'].append(total_iters)
+                    metrics['loss'].append(loss.item())
 
                 loss.backward()
                 model_optim.step()
@@ -119,15 +137,21 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 print("Early stopping")
                 break
             adjust_learning_rate(model_optim, epoch + 1, self.args)
+        
+        train_end_time = time.time()
+        train_duration = train_end_time - training_start_time
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
+        torch.save(metrics, folder_path+"metrics"+"_"+date_time_str+".pth")
 
-        return self.model
-
-    def test(self, setting, test=0):
+        return self.model, train_loss, vali_loss, test_loss, train_duration
+    
+    def test(self, setting,train_loss, vali_loss, test_loss,model,seq_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,train_duration, test=0):
         test_data, test_loader = self._get_data(flag='test')
         train_data, train_loader = self._get_data(flag='train')
+        
+        test_start_time = time.time()
         if test:
             print('loading model')
             self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
@@ -172,7 +196,10 @@ class Exp_Anomaly_Detection(Exp_Basic):
         combined_energy = np.concatenate([train_energy, test_energy], axis=0)
         threshold = np.percentile(combined_energy, 100 - self.args.anomaly_ratio)
         print("Threshold :", threshold)
-
+        
+        test_end_time = time.time()
+        test_duration = test_end_time - test_start_time
+        total_time = train_duration + test_duration
         # (3) evaluation on the test set
         pred = (test_energy > threshold).astype(int)
         test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
@@ -200,12 +227,15 @@ class Exp_Anomaly_Detection(Exp_Basic):
         # Compute the confusion matrix
         print("Confusion Matrix:")
         print(cm)
+        
+        # Get the current date and time
+        now = datetime.now()
+        date_time_str = now.strftime("%Y-%m-%d_%H-%M")
+        #pred_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed
 
-        with open("result_anomaly_detection.csv", 'a') as f:
-            f.write(setting + "  \n")
-            f.write("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}, Cm : {cm}".format(
-            accuracy, precision,
-            recall, f_score))
-            f.write('\n')
-            f.write('\n')
+        metrics = [["Model","Accuracy", "Precision","Recall","F-score","Confusion Matrix","Train loss","Vali loss","Test loss","Seq len","Dim Model","E layers","Dim ff","n_heads","Train epochs","Loss","Learning rate","Anomaly ratio","embed","Total Duration (s)","Train Duration (s)", "Test Duration (s)"],[model,f"{accuracy:.4f}",f"{precision:.4f}",f"{recall:.4f}",f"{f_score:.4f}",str(cm),f"{train_loss:.4f}",f"{vali_loss:.4f}",f"{test_loss:.4f}",seq_len,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,f"{total_time:.2f}",f"{train_duration:.2f}",f"{test_duration:.2f}"]]
+        with open(folder_path+"results"+"_"+date_time_str+".csv", 'a',newline='') as f:
+            writer = csv.writer(f)
+            for row in metrics:
+                writer.writerow(row)
         return

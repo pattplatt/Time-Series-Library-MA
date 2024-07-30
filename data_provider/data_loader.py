@@ -12,6 +12,7 @@ from data_provider.uea import subsample, interpolate_missing, Normalizer
 from sktime.datasets import load_from_tsfile_to_dataframe
 import warnings
 from utils.augmentation import run_augmentation_single
+from sklearn.preprocessing import MinMaxScaler, RobustScaler, PowerTransformer
 
 warnings.filterwarnings('ignore')
 
@@ -750,12 +751,13 @@ class UEAloader(Dataset):
 class WADISegLoader(Dataset):
     def __init__(self, args, root_path, win_size, step=1, flag="train"):
         self.flag = flag
-        self.step = step #The step size determines the stride with which the window moves across the data array. A step size of 1 means moving the window one sample at a time, while a larger step size skips samples in between windows. 
-        self.win_size = win_size #seq_len
-        self.scaler = StandardScaler()
+        self.step = step
+        self.win_size = win_size
+        self.scaler = PowerTransformer(method='yeo-johnson')  # Use MinMaxScaler with feature_range set to (-1, 1)
+        #self.scaler = StandardScaler()
         data = np.load(os.path.join(root_path, "WADI_train.npy"))
         self.scaler.fit(data)
-        data = self.scaler.transform(data)
+        data = self.scaler.transform(data)        
         test_data = np.load(os.path.join(root_path, "WADI_test.npy"))
         self.test = self.scaler.transform(test_data)
         self.train = data
