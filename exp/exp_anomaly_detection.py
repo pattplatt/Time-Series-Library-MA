@@ -16,7 +16,6 @@ import numpy as np
 from datetime import datetime
 import csv
 
-
 warnings.filterwarnings('ignore')
 
 
@@ -71,7 +70,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
         now = datetime.now()
         date_time_str = now.strftime("%Y-%m-%d_%H-%M")
     
-        folder_path = './test_results/' + setting + date_time_str +'/'
+        folder_path = './test_results/HTTP_benchmarkv3/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
         metrics = {'epoch': [],'iters': [], 'loss': []}
@@ -157,7 +156,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
             self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
 
         attens_energy = []
-        folder_path = './test_results/' + setting + '/'
+        folder_path = './test_results/HTTP_benchmarkv3/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
@@ -193,6 +192,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
         attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
         test_energy = np.array(attens_energy)
+        print("train_energy:",len(train_energy))
         combined_energy = np.concatenate([train_energy, test_energy], axis=0)
         threshold = np.percentile(combined_energy, 100 - self.args.anomaly_ratio)
         print("Threshold :", threshold)
@@ -210,7 +210,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
         print("gt:     ", gt.shape)
 
         # (4) detection adjustment
-        gt, pred = adjustment(gt, pred)
+        #gt, pred = adjustment(gt, pred)
 
         pred = np.array(pred)
         gt = np.array(gt)
@@ -219,7 +219,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
         accuracy = accuracy_score(gt, pred)
         cm = confusion_matrix(gt, pred)
-
+        cm=np.floor(cm/seq_len)
+        np.set_printoptions(suppress=True)
         precision, recall, f_score, support = precision_recall_fscore_support(gt, pred, average='binary')
         print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
             accuracy, precision,
@@ -227,15 +228,20 @@ class Exp_Anomaly_Detection(Exp_Basic):
         # Compute the confusion matrix
         print("Confusion Matrix:")
         print(cm)
-        
+        #cm_form = np.array2string(cm, formatter={'float_kind':lambda x: "%.12f" % x})
         # Get the current date and time
         now = datetime.now()
         date_time_str = now.strftime("%Y-%m-%d_%H-%M")
         #pred_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed
 
-        metrics = [["Model","Accuracy", "Precision","Recall","F-score","Confusion Matrix","Train loss","Vali loss","Test loss","Seq len","Dim Model","E layers","Dim ff","n_heads","Train epochs","Loss","Learning rate","Anomaly ratio","embed","Total Duration (s)","Train Duration (s)", "Test Duration (s)"],[model,f"{accuracy:.4f}",f"{precision:.4f}",f"{recall:.4f}",f"{f_score:.4f}",str(cm),f"{train_loss:.4f}",f"{vali_loss:.4f}",f"{test_loss:.4f}",seq_len,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,f"{total_time:.2f}",f"{train_duration:.2f}",f"{test_duration:.2f}"]]
-        with open(folder_path+"results"+"_"+date_time_str+".csv", 'a',newline='') as f:
+        header = ["Model", "Accuracy", "Precision", "Recall", "F-score", "Confusion Matrix", "Train loss", "Vali loss", "Test loss", "Seq len", "Dim Model", "E layers", "Dim ff", "n_heads", "Train epochs", "Loss", "Learning rate", "Anomaly ratio", "embed", "Total Duration (s)", "Train Duration (s)", "Test Duration (s)"]
+        metrics = [model, f"{accuracy:.4f}", f"{precision:.4f}", f"{recall:.4f}", f"{f_score:.4f}", f"{cm}", f"{train_loss:.6f}", f"{vali_loss:.6f}", f"{test_loss:.6f}", seq_len, d_model, e_layers, d_ff, n_heads, train_epochs, loss, learning_rate, anomaly_ratio, embed, f"{total_time:.2f}", f"{train_duration:.2f}", f"{test_duration:.2f}"]
+
+        file_path = os.path.join(folder_path, "results_no_adjustments.csv")
+        file_exists = os.path.isfile(file_path)
+
+        with open(file_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            for row in metrics:
-                writer.writerow(row)
-        return
+            if not file_exists:
+                writer.writerow(header)
+            writer.writerow(metrics)

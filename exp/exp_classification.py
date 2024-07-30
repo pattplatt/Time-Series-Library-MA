@@ -1,6 +1,8 @@
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
 from utils.tools import EarlyStopping, adjust_learning_rate, cal_accuracy
+from sklearn.metrics import precision_recall_fscore_support
+
 import torch
 import torch.nn as nn
 from torch import optim
@@ -9,6 +11,8 @@ import time
 import warnings
 import numpy as np
 import pdb
+import csv
+
 
 warnings.filterwarnings('ignore')
 
@@ -141,10 +145,12 @@ class Exp_Classification(Exp_Basic):
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
+        train_duration=0
+        return self.model, train_loss, vali_loss, test_loss, train_duration
 
-        return self.model
 
-    def test(self, setting, test=0):
+    def test(self, setting,train_loss, vali_loss, test_loss,model,seq_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,train_duration, test=0):
+
         test_data, test_loader = self._get_data(flag='TEST')
         if test:
             print('loading model')
@@ -152,7 +158,7 @@ class Exp_Classification(Exp_Basic):
 
         preds = []
         trues = []
-        folder_path = './test_results/' + setting + '/'
+        folder_path = './test_results/wafer/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
@@ -178,10 +184,8 @@ class Exp_Classification(Exp_Basic):
         accuracy = cal_accuracy(predictions, trues)
 
         # result save
-        folder_path = './results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
 
+        precision, recall, f_score, support = precision_recall_fscore_support(trues, predictions, average='binary')
         print('accuracy:{}'.format(accuracy))
         file_name='result_classification.txt'
         f = open(os.path.join(folder_path,file_name), 'a')
@@ -190,4 +194,22 @@ class Exp_Classification(Exp_Basic):
         f.write('\n')
         f.write('\n')
         f.close()
-        return
+        total_time=0
+        train_duration=0
+        test_duration=0
+        cm=0
+        header = ["Model", "Accuracy", "Precision", "Recall", "F-score", "Confusion Matrix", "Train loss", "Vali loss", "Test loss", "Seq len", "Dim Model", "E layers", "Dim ff", "n_heads", "Train epochs", "Loss", "Learning rate", "Anomaly ratio", "embed", "Total Duration (s)", "Train Duration (s)", "Test Duration (s)"]
+        metrics = [model, f"{accuracy:.4f}", f"{precision:.4f}", f"{recall:.4f}", f"{f_score:.4f}", str(cm), f"{train_loss:.6f}", f"{vali_loss:.6f}", f"{test_loss:.6f}", seq_len, d_model, e_layers, d_ff, n_heads, train_epochs, loss, learning_rate, anomaly_ratio, embed, f"{total_time:.2f}", f"{train_duration:.2f}", f"{test_duration:.2f}"]
+    
+        file_path = os.path.join(folder_path, "results.csv")
+        file_exists = os.path.isfile(file_path)
+        print("file_path:",file_path)
+        with open(file_path, 'a', newline='') as f:
+            print("write csv")
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(header)
+            writer.writerow(metrics)
+
+
+

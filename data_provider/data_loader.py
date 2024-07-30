@@ -13,6 +13,7 @@ from sktime.datasets import load_from_tsfile_to_dataframe
 import warnings
 from utils.augmentation import run_augmentation_single
 from sklearn.preprocessing import MinMaxScaler, RobustScaler, PowerTransformer
+from sklearn.model_selection import train_test_split
 
 warnings.filterwarnings('ignore')
 
@@ -791,3 +792,57 @@ class WADISegLoader(Dataset):
             return np.float32(self.test[
                               index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
+        
+class HTTPSegLoader(Dataset):
+    def __init__(self, args, root_path, win_size, step=1, flag="train"):
+        self.flag = flag
+        self.step = step
+        self.win_size = win_size
+        self.scaler = StandardScaler()
+        
+        data = pd.read_csv(os.path.join(root_path, 'http_transposed.csv'))
+        labels = pd.read_csv(os.path.join(root_path, 'http_labels_transposed.csv'))
+
+        # Split the data into train and temp (which will be further split into test and validation)
+        train_df, temp_df = train_test_split(data, test_size=0.5, random_state=42)
+        val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42)
+                
+        labels_train_df, labels_temp_df = train_test_split(labels, test_size=0.5, random_state=42)
+        labels_val_df, labels_test_df = train_test_split(labels_temp_df, test_size=0.5, random_state=42)
+        
+        self.scaler.fit(train_df)
+        train_data = self.scaler.transform(train_df)
+        test_data = self.scaler.transform(test_df)
+        val_data = self.scaler.transform(val_df)
+
+        self.train = train_data
+        self.val = val_data
+        self.test = test_data
+        self.train_labels = labels_train_df.values
+        self.val_labels = labels_val_df.values
+        self.test_labels = labels_test_df.values
+        
+        print("test:", self.test.shape)
+        print("train:", self.train.shape)
+
+    def __len__(self):
+        if self.flag == "train":
+            return (self.train.shape[0] - self.win_size) // self.step + 1
+        elif self.flag == 'val':
+            return (self.val.shape[0] - self.win_size) // self.step + 1
+        elif self.flag == 'test':
+            return (self.test.shape[0] - self.win_size) // self.step + 1
+        else:
+            return (self.test.shape[0] - self.win_size) // self.step + 1
+
+    def __getitem__(self, index):
+        index = index * self.step
+        if self.flag == "train":
+            return np.float32(self.train[index:index + self.win_size]), np.float32(self.train_labels[index:index + self.win_size])
+        elif self.flag == 'val':
+            return np.float32(self.val[index:index + self.win_size]), np.float32(self.val_labels[index:index + self.win_size])
+        elif self.flag == 'test':
+            return np.float32(self.test[index:index + self.win_size]), np.float32(self.test_labels[index:index + self.win_size])
+        else:
+            return np.float32(self.test[index:index + self.win_size]), np.float32(self.test_labels[index:index + self.win_size])
+
