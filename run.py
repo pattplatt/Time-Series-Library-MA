@@ -134,10 +134,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     # args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
-    args.use_gpu = True if torch.cuda.is_available() else False
+    args.use_gpu = True if torch.backends.mps.is_available() else False
 
-    print(torch.cuda.is_available())
-
+    print("mps:",torch.backends.mps.is_available())
+    print("args:", args.devices)
     if args.use_gpu and args.use_multi_gpu:
         args.devices = args.devices.replace(' ', '')
         device_ids = args.devices.split(',')
@@ -190,7 +190,7 @@ if __name__ == '__main__':
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             exp.test(setting)
-            torch.cuda.empty_cache()
+            #torch.cuda.empty_cache()
     else:
         ii = 0
         setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
@@ -217,4 +217,4 @@ if __name__ == '__main__':
         exp = Exp(args)  # set experiments
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         exp.test(setting, test=1)
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()

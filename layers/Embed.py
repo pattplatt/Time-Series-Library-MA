@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn.utils import weight_norm
 import math
 
-
+#supports different input lenghts up till max_len
 class PositionalEmbedding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEmbedding, self).__init__()
@@ -41,7 +41,7 @@ class TokenEmbedding(nn.Module):
         x = self.tokenConv(x.permute(0, 2, 1)).transpose(1, 2)
         return x
 
-
+#only fixed input lenghts with fixed positions(c_in)
 class FixedEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
         super(FixedEmbedding, self).__init__()

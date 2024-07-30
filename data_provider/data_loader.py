@@ -750,8 +750,8 @@ class UEAloader(Dataset):
 class WADISegLoader(Dataset):
     def __init__(self, args, root_path, win_size, step=1, flag="train"):
         self.flag = flag
-        self.step = step
-        self.win_size = win_size
+        self.step = step #The step size determines the stride with which the window moves across the data array. A step size of 1 means moving the window one sample at a time, while a larger step size skips samples in between windows. 
+        self.win_size = win_size #seq_len
         self.scaler = StandardScaler()
         data = np.load(os.path.join(root_path, "WADI_train.npy"))
         self.scaler.fit(data)
@@ -775,6 +775,10 @@ class WADISegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.step + 1
         else:
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
+        
+    #In summary, this line of code calculates the total number of training windows or batches that can be extracted from the training data, 
+    # given the window size and step size. This is crucial for batch-wise training in machine learning, where the model is iteratively 
+    # trained on small segments of the data.
 
     def __getitem__(self, index):
         index = index * self.step
