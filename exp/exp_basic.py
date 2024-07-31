@@ -34,6 +34,11 @@ class Exp_Basic(object):
             'SegRNN': SegRNN,
             'TemporalFusionTransformer': TemporalFusionTransformer
         }
+        if args.model == 'Mamba':
+            print('Please make sure you have successfully installed mamba_ssm')
+            from models import Mamba
+            self.model_dict[Mamba] = Mamba
+
         self.device = self._acquire_device()
         self.model = self._build_model().to(self.device)
 
@@ -43,10 +48,10 @@ class Exp_Basic(object):
 
     def _acquire_device(self):
         if self.args.use_gpu:
-            # os.environ["CUDA_VISIBLE_DEVICES"] = str(
-            #     self.args.gpu) if not self.args.use_multi_gpu else self.args.devices
-            device = torch.device("mps")
-            print(f'Use GPU: cuda:{device}')
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(
+                self.args.gpu) if not self.args.use_multi_gpu else self.args.devices
+            device = torch.device('cuda:{}'.format(self.args.gpu))
+            print('Use GPU: cuda:{}'.format(self.args.gpu))
         else:
             device = torch.device('cpu')
             print('Use CPU')

@@ -5,11 +5,11 @@ model_name=Autoformer
 python -u run.py \
   --task_name long_term_forecast \
   --is_training 1 \
-  --root_path ./dataset/ETT-small/ \
-  --data_path ETTm1.csv \
+  --root_path ./dataset/anomaly_detection/WADI/WADI2019_no_scaler \
+    --data_path WADI_train.csv \
   --model_id ETTm1_96_96 \
   --model $model_name \
-  --data ETTm1 \
+  --data WADI \
   --features M \
   --seq_len 96 \
   --label_len 48 \

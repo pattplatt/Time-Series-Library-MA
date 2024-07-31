@@ -133,11 +133,10 @@ if __name__ == '__main__':
     parser.add_argument('--extra_tag', type=str, default="", help="Anything extra")
 
     args = parser.parse_args()
-    # args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
-    args.use_gpu = True if torch.backends.mps.is_available() else False
+    args.use_gpu = True if torch.cuda.is_available() else False
 
-    print("mps:",torch.backends.mps.is_available())
-    print("args:", args.devices)
+    print(torch.cuda.is_available())
+
     if args.use_gpu and args.use_multi_gpu:
         args.devices = args.devices.replace(' ', '')
         device_ids = args.devices.split(',')
@@ -217,4 +216,4 @@ if __name__ == '__main__':
         exp = Exp(args)  # set experiments
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         exp.test(setting, test=1)
-        #torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
