@@ -850,3 +850,89 @@ class HTTPSegLoader(Dataset):
         else:
             return np.float32(self.test[index:index + self.win_size]), np.float32(self.test_labels[index:index + self.win_size])
 
+class WADI_F_SegLoader(Dataset):
+    def __init__(self, args, root_path, flag='pred', size=None,
+                 features='S', data_path='WADI_train.csv',
+                 target='OT', scale=False, inverse=False, timeenc=0, freq='s',
+                 seasonal_patterns=None):
+        if size == None:
+            self.seq_len = 24 * 4 * 4
+            self.label_len = 24 * 4
+            self.pred_len = 24 * 4
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+
+        self.flag = flag
+        assert flag in ['train', 'test', 'val']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+        self.root_path = root_path
+        self.data_path = data_path
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.inverse = inverse
+        self.timeenc = timeenc
+        self.root_path = root_path
+        self.freq = freq
+
+        self.train =  np.load(os.path.join(self.root_path, "WADI_train.npy"))
+        self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
+        self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+        data_len = len(self.train)
+        self.val = self.train[(int)(data_len * 0.8):]
+        self.scaler = PowerTransformer(method='yeo-johnson')  # Use MinMaxScaler with feature_range set to (-1, 1)
+
+        self.__read_data__()
+
+        # self.seasonal_patterns = seasonal_patterns
+        # self.history_size = M4Meta.history_size[seasonal_patterns]
+        #self.window_sampling_limit = int(self.history_size * self.pred_len)
+
+    def __read_data__(self):
+        if self.scale:
+            self.scaler.fit(self.train)
+            train_data = self.scaler.transform(self.train)
+            self.train = train_data
+            self.test = self.scaler.transform(self.test)
+        else:
+            train_data = self.train
+
+        if self.flag == "train":
+            self.data_x = self.train
+            self.data_y = self.train
+        elif self.flag == "test":
+            self.data_x = self.test
+            self.data_y = self.test
+        elif self.flag == "val":
+            self.data_x = self.val
+            self.data_y = self.val
+        
+        data_stamp = time_features(pd.to_datetime(len(self.data_x)), freq=self.freq)
+        data_stamp = data_stamp.transpose(1, 0)
+        self.data_stamp = data_stamp
+
+    def __getitem__(self, index):
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len
+        r_end = r_begin + self.label_len + self.pred_len
+
+        seq_x = self.data_x
+        seq_y = self.data_y
+        seq_x_mark = self.data_stamp
+        seq_y_mark = self.data_stamp
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+
+        # test_data = np.load(os.path.join(root_path, "WADI_test.npy"))
+        # self.test = self.scaler.transform(test_data)
+        # self.train = data
+        # data_len = len(self.train)
+        # self.val = self.train[(int)(data_len * 0.8):]
+        # self.test_labels = np.load(os.path.join(root_path, "WADI_test_label.npy"))
+
+    def __len__(self):
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
