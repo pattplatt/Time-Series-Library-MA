@@ -82,6 +82,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
+        attens_energy = []
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -141,6 +142,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
+
+                score = torch.mean(outputs, dim=-1) 
+                score = score.detach().cpu().numpy()
+                attens_energy.append(score)
 
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
