@@ -853,7 +853,7 @@ class HTTPSegLoader(Dataset):
 class WADI_F_SegLoader(Dataset):
     def __init__(self, args, root_path, flag='pred', size=None,
                  features='S', data_path='WADI_train.csv',
-                 target='OT', scale=False, inverse=False, timeenc=0, freq='s',
+                 target='OT', scale=True, inverse=False, timeenc=0, freq='s',
                  seasonal_patterns=None):
         if size is None:
             self.seq_len = 24 * 4 * 4
@@ -891,6 +891,7 @@ class WADI_F_SegLoader(Dataset):
             self.scaler.fit(self.train)
             self.train = self.scaler.transform(self.train)
             self.test = self.scaler.transform(self.test)
+            self.val = self.scaler.transform(self.val)
         
         if self.flag == "train":
             self.data_x = self.train
