@@ -183,12 +183,20 @@ if __name__ == '__main__':
                 args.embed,
                 args.distil,
                 args.des, ii)
-
+            
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-            _, train, val, test, train_duration = exp.train(setting)
+            if args.task_name == 'anomaly_detection':
+                _, train, val, test, train_duration = exp.train(setting)
+            elif args.task_name == 'long_term_forecast':
+                _, train, val, test, train_duration, anomaly_thresholds = exp.train(setting)
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration)
+            if args.task_name == 'anomaly_detection':
+                
+                exp.test(setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration)
+            elif args.task_name == 'long_term_forecast':
+                exp.test(anomaly_thresholds,setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration)
+                
             torch.cuda.empty_cache()
     else:
         ii = 0
