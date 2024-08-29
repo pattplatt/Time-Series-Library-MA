@@ -864,6 +864,7 @@ class WADI_F_SegLoader(Dataset):
             self.label_len = size[1]
             self.pred_len = size[2]
 
+        self.args=args
         self.flag = flag
         assert flag in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}
@@ -877,14 +878,14 @@ class WADI_F_SegLoader(Dataset):
         self.timeenc = timeenc
         self.freq = freq
 
-        self.train = np.load(os.path.join(self.root_path, "WADI_train.npy"))
-        self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
-        self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+        self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
+        self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
+        self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
         
-        #self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
-        #self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
-        #self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
-        
+        #self.train = np.load(os.path.join(self.root_path, "WADI_train.npy"))
+        #self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
+        #self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+
         data_len = len(self.train)
         self.val = self.train[int(data_len * 0.8):]
         self.scaler = PowerTransformer(method='yeo-johnson')  # Use MinMaxScaler with feature_range set to (-1, 1)
@@ -904,7 +905,6 @@ class WADI_F_SegLoader(Dataset):
         elif self.flag == "test":
             self.data_x = self.test
             self.data_y = self.test
-            
         elif self.flag == "val":
             self.data_x = self.val
             self.data_y = self.val
@@ -914,26 +914,43 @@ class WADI_F_SegLoader(Dataset):
         data_stamp = time_features(timestamps, freq=self.freq)
         data_stamp = data_stamp.transpose(1, 0)
         self.data_stamp = data_stamp
+        #print (" self.data_stamp:",self.data_stamp.shape)
 
     def __getitem__(self, index):
-        s_begin = index
+        
+        if self.args.win_mode == "hopping":
+            s_begin = index*self.pred_len
+        else: 
+            s_begin = index
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
-
-        # Ensure indices are within bounds
+        
+        #Ensure indices are within bounds
         if s_end > len(self.data_x) or r_end > len(self.data_y):
             raise IndexError("Index out of bounds")
-
+        
         seq_x = self.data_x[s_begin:s_end]
         seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
         seq_labels = self.test_labels[s_begin:s_end]
-        if self.flag == "test":
-            return seq_x, seq_y, seq_x_mark, seq_y_mark,seq_labels
+        
+        if self.flag=='test':
+            return seq_x, seq_y, seq_x_mark, seq_y_mark, seq_labels
         else:
             return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
-        return len(self.data_x) - self.seq_len - self.pred_len + 1
+        if self.args.win_mode == "hopping":
+            return (len(self.data_x) - self.seq_len) // self.pred_len
+        else:
+            return len(self.data_x) - self.seq_len - self.pred_len + 1
+    
+        #self.train = np.load(os.path.join(self.root_path, "WADI_train.npy"))
+        #self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
+        #self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+
+        #self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
+        #self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
+        #self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))

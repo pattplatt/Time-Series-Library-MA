@@ -48,7 +48,7 @@ class Model(nn.Module):
             norm_layer=my_Layernorm(configs.d_model)
         )
         # Decoder
-        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
+        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast' or self.task_name =='enc_dec_anomaly':
             self.dec_embedding = DataEmbedding_wo_pos(configs.dec_in, configs.d_model, configs.embed, configs.freq,
                                                       configs.dropout)
             self.decoder = Decoder(
@@ -100,13 +100,19 @@ class Model(nn.Module):
             [seasonal_init[:, -self.label_len:, :], zeros], dim=1)
         # enc
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        print(f"enc_embedding.shape:{enc_out.shape}")
+        
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
+        print(f"enc_out.shape:{enc_out.shape}")
+        
         # dec
         dec_out = self.dec_embedding(seasonal_init, x_mark_dec)
+        print(f"dec_out.shape:{dec_out.shape}")
         seasonal_part, trend_part = self.decoder(dec_out, enc_out, x_mask=None, cross_mask=None,
                                                  trend=trend_init)
         # final
         dec_out = trend_part + seasonal_part
+        print(f"dec_out.shape:{dec_out.shape}")
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
@@ -121,8 +127,12 @@ class Model(nn.Module):
         # enc
         enc_out = self.enc_embedding(x_enc, None)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
+        print(f"enc_out.shape:{enc_out.shape}")
         # final
         dec_out = self.projection(enc_out)
+        print(f"dec_out.shape:{dec_out.shape}")
+        print(f"dec_out[1]:{dec_out[1]}")
+        
         return dec_out
 
     def classification(self, x_enc, x_mark_enc):
@@ -142,8 +152,10 @@ class Model(nn.Module):
         return output
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
-        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
+        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast' or self.task_name =='enc_dec_anomaly':
             dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            d = dec_out[:, -self.pred_len:, :]  # [B, L, D]
+            print(f"dec final out:{d.shape}")
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(

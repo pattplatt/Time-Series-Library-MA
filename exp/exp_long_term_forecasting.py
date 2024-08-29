@@ -13,6 +13,7 @@ from utils.dtw_metric import dtw,accelerated_dtw
 from utils.augmentation import run_augmentation,run_augmentation_single
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
+from sklearn.metrics import confusion_matrix
 
 warnings.filterwarnings('ignore')
 
@@ -85,6 +86,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
         attens_energy = []
+        total_outputs=[]
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -145,11 +147,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
                     #print("train: outputs.shape",outputs.shape)
-
+                    total_outputs.append(outputs)
+                
                 score = torch.mean(outputs, dim=-1) 
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
-
+                total_outputs_tensor=torch.stack(total_outputs, dim=0)
+                #print("total_outputs_tensor", total_outputs_tensor.shape)
+                
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
@@ -179,28 +184,30 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 break
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
-
+            
+        total_outputs_tensor = total_outputs_tensor.view(total_outputs_tensor.shape[0]*total_outputs_tensor.shape[1], 48, 123)
+        print("flattened_tensor",total_outputs_tensor.shape)
+        total_outputs_tensor=total_outputs_tensor.cpu().detach().numpy() 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         
         train_end_time = time.time()
         train_duration = train_end_time - training_start_time
         
-        # Concatenate the arrays along the first axis (axis=0)
-        concatenated_array = np.concatenate(attens_energy, axis=0)
-        #print("concatenated_array:",concatenated_array.shape)
-
         # Calculate the mean along the second dimension (axis=1)
-        mean_values = np.mean(concatenated_array, axis=0)
-        std_values = np.std(concatenated_array, axis=0)
-        k = 1.5  # This can be any value depending on how strict or loose you want the threshold
+        mean_values = np.mean(total_outputs_tensor, axis=(0,2))
+        std_values = np.std(total_outputs_tensor, axis=(0,2))
+        k = 30  # This can be any value depending on how strict or loose you want the threshold
         anomaly_thresholds = (mean_values + k * std_values, mean_values - k * std_values)
         
-        #print(std_values)
+        print("std_values",std_values.shape)
+        print("mean_values:",mean_values.shape)
+        
         #print("\nAnomaly Thresholds (mean ± k*std):")
-        #print(f"Upper Threshold: {anomaly_thresholds[0]}")
-        #print(f"Lower Threshold: {anomaly_thresholds[1]}")
-        #print("mean_values:",mean_values)
+        print(f"Upper Threshold: {anomaly_thresholds[0]}")
+        print(f"Upper Threshold: {anomaly_thresholds[0]}")
+        
+        print(f"Lower Threshold: {anomaly_thresholds[1]}")
 
         return self.model, train_loss, vali_loss, test_loss, train_duration, anomaly_thresholds
 
@@ -267,18 +274,27 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 preds_mean=np.mean(pred, axis=2, keepdims=True)
                 
                 print("preds_mean.shape",preds_mean.shape)                
+                print("preds_mean",np.mean(preds_mean,axis=1))
+                upper_anomaly_thresholds = anomaly_thresholds[0].reshape(-1,1)
+                lower_anomaly_thresholds = anomaly_thresholds[1].reshape(-1,1)
+                print("before broadcast lower_anomaly_thresholds.shape",lower_anomaly_thresholds.shape)
+                #lower_anomaly_thresholds = np.broadcast_to(preds_mean, (128, 48, 1))
+                print("after broadcast lower_anomaly_thresholds.shape",lower_anomaly_thresholds.shape)
+
                 
-                upper_anomaly_thresholds = anomaly_thresholds[1].reshape(-1,1)
-                anomaly_classification = preds_mean > upper_anomaly_thresholds
-                print("upper_anomaly_thresholds,shape",upper_anomaly_thresholds.shape)
+                anomaly_classification = preds_mean < lower_anomaly_thresholds
+                anomaly_classification_2 = preds_mean == lower_anomaly_thresholds
                 
+                num_equal = np.sum(anomaly_classification_2)
                 num_true = np.sum(anomaly_classification)
                 num_false = anomaly_classification.size - num_true
 
                 # Print the results
-                #print("Number of True values:", num_true)
-                #print("Number of False values:", num_false)
-                print("anomaly_classification",anomaly_classification.shape)
+                print("Number of equal values:", num_equal)
+                
+                print("Number of True values:", num_true)
+                print("Number of False values:", num_false)
+                #print("anomaly_classification",anomaly_classification.shape)
                 #print("seq_labels",seq_labels.shape)
                 
                 anomaly_preds.append(anomaly_classification)
@@ -306,7 +322,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print("trues:",trues.shape)
         
         anomaly_preds = torch.tensor(anomaly_preds).flatten()
-
+        print("lower_anomaly_thresholds",lower_anomaly_thresholds)
+        print("upper_anomaly_thresholds",upper_anomaly_thresholds)
+        
+        
         # result save
         folder_path = './results/' + setting + '/'
         if not os.path.exists(folder_path):
@@ -332,12 +351,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         
         print("labels",labels.shape)
 
-        accuracy = accuracy_score(anomaly_preds, labels)
+        accuracy = accuracy_score(labels, anomaly_preds)
         print("accuracy",accuracy)
-        precision, recall, f_score, support = precision_recall_fscore_support(anomaly_preds, labels, average='binary')
+        precision, recall, f_score, support = precision_recall_fscore_support(labels, anomaly_preds, average='binary')
         print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
             accuracy, precision,
             recall, f_score))
+        cm = confusion_matrix(labels, anomaly_preds)
+        #cm = np.floor(cm/seq_len)
+        print("")
+        print(cm)
+        
         #mae, mse, rmse, mape, mspe = metric(anomaly_pred, random_bools)
         #print('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
         #f = open("result_long_term_forecast.txt", 'a')

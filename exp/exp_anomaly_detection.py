@@ -196,10 +196,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
         combined_energy = np.concatenate([train_energy, test_energy], axis=0)
         threshold = np.percentile(combined_energy, 100 - self.args.anomaly_ratio)
         print("Threshold :", threshold)
-        
-        test_end_time = time.time()
-        test_duration = test_end_time - test_start_time
-        total_time = train_duration + test_duration
+
         # (3) evaluation on the test set
         pred = (test_energy > threshold).astype(int)
         test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
@@ -212,6 +209,10 @@ class Exp_Anomaly_Detection(Exp_Basic):
         # (4) detection adjustment
         #gt, pred = adjustment(gt, pred)
 
+        test_end_time = time.time()
+        test_duration = test_end_time - test_start_time
+        total_time = train_duration + test_duration
+        
         pred = np.array(pred)
         gt = np.array(gt)
         print("pred: ", pred.shape)

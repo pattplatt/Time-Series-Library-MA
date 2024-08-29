@@ -6,6 +6,7 @@ from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_classification import Exp_Classification
+from exp.exp_anomaly_enc_dec import Exp_Anomaly_Enc_Dec
 from utils.print_args import print_args
 import random
 import numpy as np
@@ -49,6 +50,10 @@ if __name__ == '__main__':
 
     # anomaly detection task
     parser.add_argument('--anomaly_ratio', type=float, default=0.25, help='prior anomaly ratio (%)')
+    parser.add_argument('--k_value', type=float, default=0,help='gets added to the anomaly threshold')
+    parser.add_argument('--win_mode', type=str, default='slide',
+                        help='time features encoding, options:[slide, hopping]')
+    parser.add_argument('--point_adjustment', action='store_true', help='activate point adjustment for anomaly detection')
 
     # model define
     parser.add_argument('--expand', type=int, default=2, help='expansion factor for Mamba')
@@ -156,6 +161,8 @@ if __name__ == '__main__':
         Exp = Exp_Anomaly_Detection
     elif args.task_name == 'classification':
         Exp = Exp_Classification
+    elif args.task_name == 'enc_dec_anomaly':
+        Exp = Exp_Anomaly_Enc_Dec
     else:
         Exp = Exp_Long_Term_Forecast
 
@@ -187,15 +194,15 @@ if __name__ == '__main__':
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             if args.task_name == 'anomaly_detection':
                 _, train, val, test, train_duration = exp.train(setting)
-            elif args.task_name == 'long_term_forecast':
-                _, train, val, test, train_duration, anomaly_thresholds = exp.train(setting)
+            elif args.task_name == 'long_term_forecast' or 'enc_dec_anomaly':
+                _, train, val, test, train_duration, anomaly_thresholds, k = exp.train(setting)
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             if args.task_name == 'anomaly_detection':
                 
                 exp.test(setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration)
-            elif args.task_name == 'long_term_forecast':
-                exp.test(anomaly_thresholds,setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration)
+            elif args.task_name == 'long_term_forecast' or 'enc_dec_anomaly':
+                exp.test(anomaly_thresholds,setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration, k)
                 
             torch.cuda.empty_cache()
     else:
