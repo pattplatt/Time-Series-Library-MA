@@ -5,6 +5,7 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 import math
+from sklearn.metrics import precision_score
 
 plt.switch_backend('agg')
 
@@ -116,3 +117,37 @@ def adjustment(gt, pred):
 
 def cal_accuracy(y_pred, y_true):
     return np.mean(y_pred == y_true)
+
+def get_events(y_test, outlier=1, normal=0):
+    events = dict()
+    label_prev = normal
+    event = 0  # corresponds to no event
+    event_start = 0
+    for tim, label in enumerate(y_test):
+        if label == outlier:
+            if label_prev == normal:
+                event += 1
+                event_start = tim
+        else:
+            if label_prev == outlier:
+                event_end = tim - 1
+                events[event] = (event_start, event_end)
+        label_prev = label
+
+    if label_prev == outlier:
+        event_end = tim - 1
+        events[event] = (event_start, event_end)
+    return events
+
+
+def get_composite_fscore_raw(pred_labels, true_events, y_test, return_prec_rec=False):
+    tp = np.sum([pred_labels[start:end + 1].any() for start, end in true_events.values()])
+    fn = len(true_events) - tp
+    rec_e = tp/(tp + fn)
+    prec_t = precision_score(y_test, pred_labels)
+    fscore_c = 2 * rec_e * prec_t / (rec_e + prec_t)
+    if prec_t == 0 and rec_e == 0:
+        fscore_c = 0
+    if return_prec_rec:
+        return prec_t, rec_e, fscore_c
+    return fscore_c
