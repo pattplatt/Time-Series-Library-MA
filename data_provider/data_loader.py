@@ -754,20 +754,25 @@ class WADISegLoader(Dataset):
         self.flag = flag
         self.step = step
         self.win_size = win_size
-        self.scaler = PowerTransformer(method='yeo-johnson')  # Use MinMaxScaler with feature_range set to (-1, 1)
-        #self.scaler = StandardScaler()
-        data = np.load(os.path.join(root_path, "WADI_train.npy"))
-        self.scaler.fit(data)
-        data = self.scaler.transform(data)        
-        test_data = np.load(os.path.join(root_path, "WADI_test.npy"))
-        self.test = self.scaler.transform(test_data)
-        self.train = data
-        data_len = len(self.train)
-        self.val = self.train[(int)(data_len * 0.8):]
+        self.scaler = PowerTransformer(method='yeo-johnson')
+        self.root_path = root_path
+        self.train = np.load(os.path.join(root_path, "WADI_train_transformed.npy"))
+        self.test = np.load(os.path.join(root_path, "WADI_test_transformed.npy"))  
         self.test_labels = np.load(os.path.join(root_path, "WADI_test_label.npy"))
+
+        #self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
+        #self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
+        #self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
+      
+        data_len = len(self.train)
+        #self.scaler.fit(self.train)
+        #self.train = self.scaler.transform(self.train)           
+        #self.test = self.scaler.transform(self.test)
+        self.val = self.train[(int)(data_len * 0.8):]
+        
         print("test:", self.test.shape)
         print("train:", self.train.shape)
-
+        
     def __len__(self):
 
         if self.flag == "train":
@@ -778,10 +783,6 @@ class WADISegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.step + 1
         else:
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
-        
-    #In summary, this line of code calculates the total number of training windows or batches that can be extracted from the training data, 
-    # given the window size and step size. This is crucial for batch-wise training in machine learning, where the model is iteratively 
-    # trained on small segments of the data.
 
     def __getitem__(self, index):
         index = index * self.step
