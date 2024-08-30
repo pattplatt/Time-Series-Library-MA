@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, adjustment
+from utils.tools import EarlyStopping, adjust_learning_rate, adjustment, get_events, get_composite_fscore_raw
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
@@ -170,6 +170,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 # reconstruction
                 outputs = self.model(batch_x, None, None, None)
                 # criterion
+                #print(f"outputs.shape:{outputs.shape}")
                 score = torch.mean(self.anomaly_criterion(batch_x, outputs), dim=-1)
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
@@ -206,43 +207,76 @@ class Exp_Anomaly_Detection(Exp_Basic):
         print("pred:   ", pred.shape)
         print("gt:     ", gt.shape)
 
-        # (4) detection adjustment
-        #gt, pred = adjustment(gt, pred)
-
         test_end_time = time.time()
         test_duration = test_end_time - test_start_time
         total_time = train_duration + test_duration
         
         pred = np.array(pred)
         gt = np.array(gt)
+
+        # Ensure pred and gt have the same shape
+        if pred.shape != gt.shape:
+            raise ValueError("Shape mismatch: pred and gt must have the same shape.")
+
         print("pred: ", pred.shape)
         print("gt:   ", gt.shape)
 
+        # General Accuracy and Confusion Matrix
         accuracy = accuracy_score(gt, pred)
         cm = confusion_matrix(gt, pred)
-        cm=np.floor(cm/seq_len)
-        np.set_printoptions(suppress=True)
+
+        # Normalize the confusion matrix by sequence length
+        cm_normalized = np.floor(cm / seq_len)
+
         precision, recall, f_score, support = precision_recall_fscore_support(gt, pred, average='binary')
-        print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
-            accuracy, precision,
-            recall, f_score))
+
+        print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(accuracy, precision, recall, f_score))
+
         # Compute the confusion matrix
-        print("Confusion Matrix:")
-        print(cm)
-        #cm_form = np.array2string(cm, formatter={'float_kind':lambda x: "%.12f" % x})
+        print("Confusion Matrix (Normalized):")
+        print(cm_normalized)
+        
+        # Point-adjusted F-1
+        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred)
+        accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
+        precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, support_point_adjusted = precision_recall_fscore_support(labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
+        cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
+
+        print("Accuracy_point_adjusted : {:0.4f}, Precision_point_adjusted : {:0.4f}, Recall_point_adjusted : {:0.4f}, F-score_point_adjusted : {:0.4f}".format(accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
+        print("Confusion Matrix (Point-adjusted):")
+        print(cm_point_adjusted)
+
+        # Composite F1
+        true_events = get_events(gt)
+        prec_t, rec_e, fscore_c = get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
+        print("Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(prec_t, rec_e, fscore_c))
+        
         # Get the current date and time
         now = datetime.now()
         date_time_str = now.strftime("%Y-%m-%d_%H-%M")
-        #pred_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed
+        
+        parameters_header = ["Model", "Train loss", "Vali loss", "Test loss", "Seq len", "Dim Model", "Enc-layers", "Dim-ff", "n_heads", "Train epochs", "Learning rate", "Anomaly ratio", "embed", "Total Duration (s)", "Train Duration (s)", "Test Duration (s)","Test Duration (min)"]
+        parameters = [model, f"{train_loss:.6f}", f"{vali_loss:.6f}", f"{test_loss:.6f}", seq_len, d_model, e_layers, d_ff, n_heads, train_epochs, learning_rate, anomaly_ratio, embed,f"{total_time:.2f}", f"{train_duration:.2f}", f"{test_duration:.2f}",f"{(total_time/60):.2f}"]
 
-        header = ["Model", "Accuracy", "Precision", "Recall", "F-score", "Confusion Matrix", "Train loss", "Vali loss", "Test loss", "Seq len", "Dim Model", "E layers", "Dim ff", "n_heads", "Train epochs", "Loss", "Learning rate", "Anomaly ratio", "embed", "Total Duration (s)", "Train Duration (s)", "Test Duration (s)"]
-        metrics = [model, f"{accuracy:.4f}", f"{precision:.4f}", f"{recall:.4f}", f"{f_score:.4f}", f"{cm}", f"{train_loss:.6f}", f"{vali_loss:.6f}", f"{test_loss:.6f}", seq_len, d_model, e_layers, d_ff, n_heads, train_epochs, loss, learning_rate, anomaly_ratio, embed, f"{total_time:.2f}", f"{train_duration:.2f}", f"{test_duration:.2f}"]
+        metrics_header = ["Model","F-Metric","Accuracy", "Precison","Recall","F-1_x", "CM"]
+        metrics_f1 = [model,"Default F1", f"{accuracy:.4f}", f"{precision:.4f}", f"{recall:.4f}", f"{f_score:.4f}", f"{cm}"]
+        metrics_fpa = [model, "Fpa", f"{accuracy_point_adjusted:.4f}", f"{precision_point_adjusted:.4f}", f"{recall_point_adjusted:.4f}", f"{f_score_point_adjusted:.4f}", f"{cm_point_adjusted}"]
+        metrics_fc = [model, "Fc", f"{accuracy_point_adjusted:.4f}", f"{prec_t:.4f}", f"{rec_e:.4f}", f"{fscore_c:.4f}", f"-"]
 
-        file_path = os.path.join(folder_path, "results_no_adjustments.csv")
+        file_path = os.path.join(folder_path, "results_")
         file_exists = os.path.isfile(file_path)
-
-        with open(file_path, 'a', newline='') as f:
+                      
+        with open(file_path + "parameters"+ ".csv", 'a', newline='') as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(header)
-            writer.writerow(metrics)
+                writer.writerow(parameters_header)
+            writer.writerow(parameters)
+            
+        with open(file_path + "metrics" + ".csv", 'a', newline='') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(metrics_header)
+            writer.writerow(metrics_f1)
+            writer.writerow(metrics_fpa)
+            writer.writerow(metrics_fc)
+            

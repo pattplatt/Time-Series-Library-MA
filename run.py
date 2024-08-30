@@ -54,6 +54,7 @@ if __name__ == '__main__':
     parser.add_argument('--win_mode', type=str, default='slide',
                         help='time features encoding, options:[slide, hopping]')
     parser.add_argument('--point_adjustment', action='store_true', help='activate point adjustment for anomaly detection')
+    parser.add_argument('--dim_ff_dec', type=int, default=256, help='dimension of second decoder ff layer')
 
     # model define
     parser.add_argument('--expand', type=int, default=2, help='expansion factor for Mamba')

@@ -78,8 +78,8 @@ class Model(nn.Module):
             self.projection = nn.Linear(
                 configs.d_model, configs.c_out, bias=True)
         if self.task_name == 'anomaly_detection':
-            self.projection = nn.Linear(
-                configs.d_model, configs.c_out, bias=True)
+            self.projection = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
+            self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
         if self.task_name == 'classification':
             self.act = F.gelu
             self.dropout = nn.Dropout(configs.dropout)
@@ -127,12 +127,12 @@ class Model(nn.Module):
         # enc
         enc_out = self.enc_embedding(x_enc, None)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
-        print(f"enc_out.shape:{enc_out.shape}")
+        #print(f"enc_out.shape:{enc_out.shape}")
         # final
         dec_out = self.projection(enc_out)
-        print(f"dec_out.shape:{dec_out.shape}")
-        print(f"dec_out[1]:{dec_out[1]}")
-        
+        dec_out = torch.relu(dec_out)
+        dec_out = self.projection_2(dec_out)     
+        #print(f"dec_out.shape:{dec_out.shape}")
         return dec_out
 
     def classification(self, x_enc, x_mark_enc):
