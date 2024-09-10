@@ -6,7 +6,9 @@ from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_classification import Exp_Classification
-from exp.exp_anomaly_enc_dec import Exp_Anomaly_Enc_Dec
+from exp.exp_anomaly_enc_dec import Exp_Anomaly_Enc_Dec 
+from exp.exp_anomaly_detection_UAE import Exp_Anomaly_Detection_UAE
+
 from utils.print_args import print_args
 import random
 import numpy as np
@@ -164,6 +166,8 @@ if __name__ == '__main__':
         Exp = Exp_Classification
     elif args.task_name == 'enc_dec_anomaly':
         Exp = Exp_Anomaly_Enc_Dec
+    elif args.task_name == 'anomaly_detection_uae':
+        Exp = Exp_Anomaly_Detection_UAE
     else:
         Exp = Exp_Long_Term_Forecast
 
@@ -193,13 +197,13 @@ if __name__ == '__main__':
                 args.des, ii)
             
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-            if args.task_name == 'anomaly_detection':
+            if args.task_name == 'anomaly_detection' or 'anomaly_detection_uae':
                 _, train, val, test, train_duration = exp.train(setting)
             elif args.task_name == 'long_term_forecast' or 'enc_dec_anomaly':
                 _, train, val, test, train_duration, anomaly_thresholds, k = exp.train(setting)
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            if args.task_name == 'anomaly_detection':
+            if args.task_name == 'anomaly_detection' or 'anomaly_detection_uae':
                 
                 exp.test(setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration)
             elif args.task_name == 'long_term_forecast' or 'enc_dec_anomaly':

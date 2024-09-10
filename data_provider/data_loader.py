@@ -756,6 +756,7 @@ class WADISegLoader(Dataset):
         self.win_size = win_size
         self.scaler = PowerTransformer(method='yeo-johnson')
         self.root_path = root_path
+        
         self.train = np.load(os.path.join(root_path, "WADI_train_transformed.npy"))
         self.test = np.load(os.path.join(root_path, "WADI_test_transformed.npy"))  
         self.test_labels = np.load(os.path.join(root_path, "WADI_test_label.npy"))
@@ -769,6 +770,44 @@ class WADISegLoader(Dataset):
         #self.train = self.scaler.transform(self.train)           
         #self.test = self.scaler.transform(self.test)
         self.val = self.train[(int)(data_len * 0.8):]
+        
+        if args.task_name == 'anomaly_detection_uae':     
+            for dim in range(len(self.train[0])):
+                X_min = np.min(self.train[:,dim:dim+1], axis=0)
+                X_max = np.max(self.train[:,dim:dim+1], axis=0)
+
+                # Apply the min-max normalization formula
+                if X_max - X_min != 0:  # Avoid division by zero
+                    self.train[:, dim] = (self.train[:, dim] - X_min) / (X_max - X_min)
+                else:
+                    #print(f"Warning: Dimension {dim} has constant values. Skipping normalization.")
+                    # If X_max == X_min, then the entire column has the same value. You may skip normalization or set it to 0.
+                    self.train[:, dim] = 0
+
+            for dim in range(len(self.test[0])):            
+                X_min = np.min(self.test[:,dim:dim+1], axis=0)
+                X_max = np.max(self.test[:,dim:dim+1], axis=0)
+
+                # Apply the min-max normalization formula
+                if X_max - X_min != 0:  # Avoid division by zero
+                    self.test[:, dim] = (self.test[:, dim] - X_min) / (X_max - X_min)
+                else:
+                    #print(f"Warning: Dimension {dim} has constant values. Skipping normalization.")
+                    # If X_max == X_min, then the entire column has the same value. You may skip normalization or set it to 0.
+                    self.test[:, dim] = 0
+
+
+            for dim in range(len(self.val[0])):            
+                X_min = np.min(self.val[:,dim:dim+1], axis=0)
+                X_max = np.max(self.val[:,dim:dim+1], axis=0)
+
+                # Apply the min-max normalization formula
+                if X_max - X_min != 0:  # Avoid division by zero
+                    self.val[:, dim] = (self.val[:, dim] - X_min) / (X_max - X_min)
+                else:
+                    #print(f"Warning: Dimension {dim} has constant values. Skipping normalization.")
+                    # If X_max == X_min, then the entire column has the same value. You may skip normalization or set it to 0.
+                    self.val[:, dim] = 0
         
         print("test:", self.test.shape)
         print("train:", self.train.shape)
@@ -842,6 +881,7 @@ class HTTPSegLoader(Dataset):
 
     def __getitem__(self, index):
         index = index * self.step
+        print("self.train.shape",self.train.shape)
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.train_labels[index:index + self.win_size])
         elif self.flag == 'val':
