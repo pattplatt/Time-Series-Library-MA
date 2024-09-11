@@ -894,7 +894,7 @@ class HTTPSegLoader(Dataset):
 class WADI_F_SegLoader(Dataset):
     def __init__(self, args, root_path, flag='pred', size=None,
                  features='S', data_path='WADI_train.csv',
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='s',
+                 target='OT', scale=False, inverse=False, timeenc=0, freq='s',
                  seasonal_patterns=None):
         if size is None:
             self.seq_len = 24 * 4 * 4
@@ -919,13 +919,13 @@ class WADI_F_SegLoader(Dataset):
         self.timeenc = timeenc
         self.freq = freq
 
-        self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
-        self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
-        self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
+        #self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
+        #self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
+        #self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
         
-        #self.train = np.load(os.path.join(self.root_path, "WADI_train.npy"))
-        #self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
-        #self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+        self.train = np.load(os.path.join(self.root_path, "WADI_train.npy"))
+        self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
+        self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
 
         data_len = len(self.train)
         self.val = self.train[int(data_len * 0.8):]

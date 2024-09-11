@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, visual, adjustment
+from utils.tools import EarlyStopping, adjust_learning_rate, visual, adjustment, get_gaussian_kernel_scores, get_dynamic_scores, threshold_and_predict
 from utils.metrics import metric
 import torch
 import torch.nn as nn
@@ -226,8 +226,8 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         anomaly_preds=[]
         labels=[]
         folder_path = './test_results/' + setting + '/'
-        #if not os.path.exists(folder_path):
-            #os.makedirs(folder_path)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
         total_losses = []
         
         self.model.eval()
@@ -277,18 +277,33 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 preds.append(pred)
                 trues.append(true)
                 labels.append(seq_labels)
-                #print(f"pred:{pred.shape}")
-                for i in range(outputs.shape[0]):
-                    batch = outputs[i]
-                    loss = criterion(torch.from_numpy(batch), torch.from_numpy(batch_y[i]))
-                    #print(f"loss: {loss}")
-                    #print(f"anomaly_threshold: {anomaly_threshold}")
-                    total_losses.append(loss)
-                    anomaly_classification = loss > anomaly_threshold
-                    anomaly_classification_array = np.full(pred.shape[1], anomaly_classification)
-                    #print("anomaly_classification_array.shape",np.array(anomaly_classification_array).shape)
+                #print(f"preds.shape:{np.array(preds).shape}")
+                #print(f"outputs.shape:{outputs.shape}")
+                labels_ = torch.stack(labels)
+                #print(f"labels.shape:{labels_.shape}")
+                
+            preds=np.array(preds)
+                
+            for i in range(preds.shape[0]):
+                for n in range(preds.shape[1]):
+                    for l in range(preds.shape[2]):
+                    
+                        batch = preds[i][n][l]
+                        #print(f"batch.shape:{batch.shape}")
+                        #das hier sind die MSE errors als anomaly scores
+                        l1_loss = nn.L1Loss()
+
+                        loss = criterion(torch.from_numpy(batch), torch.from_numpy(batch_y[l]))
+                        #print(f"loss: {loss}")
+                        #print(f"anomaly_threshold: {anomaly_threshold}")
+                        total_losses.append(loss)
+                    
+                    #das raus, anomaly_classification wird erst zum schluss mit allen punkten gemacht
+                    #anomaly_classification = loss > anomaly_threshold
+                    #anomaly_classification_array = np.full(pred.shape[1], anomaly_classification)
+       #print("anomaly_classification_array.shape",np.array(anomaly_classification_array).shape)
                     #print("anomaly_classification_array.flatten.shape",np.array(anomaly_classification_array).flatten().shape)
-                    anomaly_preds.append(anomaly_classification_array)
+                    #anomaly_preds.append(anomaly_classification_array)
                 
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
@@ -298,6 +313,16 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
+        
+        total_losses = np.array(total_losses)
+        print(f"total_losses.shape:{total_losses.shape}")
+        
+        #this should be a run parameter 
+        kernel_sigma = 3 
+        #input only scores with channels and time-points
+        #score_t_test, score_tc_test = get_gaussian_kernel_scores(total_losses,None,kernel_sigma)
+        score_t_test, _, _, _ =  get_dynamic_scores(None, None, None, total_losses, long_window=100000, short_window=100)
+        
         preds = np.array(preds)
         trues = np.array(trues)
         #print('preds shape:', preds.shape)
@@ -306,12 +331,12 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
         #print('test shape:', preds.shape, trues.shape)
-        #print("trues:",trues.shape)
+        print("trues:",trues.shape)
         
         anomaly_preds = torch.tensor(anomaly_preds).flatten()
         
         # result save
-        folder_path = './test_results/enc_dec_slide_test/'
+        folder_path = './test_results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
         
@@ -329,21 +354,24 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             dtw = np.array(dtw_list).mean()
         else:
             dtw = -999
-            
+        
         test_end_time = time.time()
         test_duration = test_end_time - test_start_time
         total_time = train_duration + test_duration
-
+        
         labels = torch.stack(labels, dim=0)
         labels = labels.flatten()
         
-        accuracy = accuracy_score(labels, anomaly_preds)
-        precision, recall, f_score, support = precision_recall_fscore_support(labels, anomaly_preds, average='binary')
-        cm = confusion_matrix(labels, anomaly_preds)
+        print(f"labels.shape:{labels.shape}")
+        
+        opt_thres, pred_labels, avg_prec, auroc = threshold_and_predict(score_t_test,labels,true_events=None,logger=None,test_anom_frac=0.1,thres_method="tail_prob",return_auc=True,)
+        accuracy = accuracy_score(labels, pred_labels)
+        precision, recall, f_score, support = precision_recall_fscore_support(labels, pred_labels, average='binary')
+        cm = confusion_matrix(labels, pred_labels)
         
         #(4) detection adjustment
         #if self.args.point_adjustment:
-        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(labels, anomaly_preds)
+        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(labels, pred_labels)
         accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
         precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, support_point_adjusted = precision_recall_fscore_support(labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
         cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
