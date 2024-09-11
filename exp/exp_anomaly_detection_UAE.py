@@ -17,6 +17,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
 import csv
+import subprocess
 
 warnings.filterwarnings('ignore')
 
@@ -59,15 +60,16 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
             
         ctx = mp.get_context('spawn')
 
-        pool = ctx.Pool(processes=10)
+        pool = ctx.Pool(processes=30)
 
         results = []
+        print("Memory allocated before: ", torch.cuda.memory_allocated())
         
         for channel_num in range(self.args.enc_in):
             self.model = self._build_model().cpu()
             model_optim = self._select_optimizer(self.model)
             criterion = self._select_criterion()
-            
+
             args = (
                 train_loader, 
                 setting, 
@@ -86,6 +88,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         pool.close()
         pool.terminate()
         pool.join()
+        print("Memory allocated after: ", torch.cuda.memory_allocated())
         
         # Collect and assign models and losses
         #self.model = [None] * self.args.enc_in
@@ -186,11 +189,8 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
     def predict_one_channel(self,setting, channel_num, args, device):
         train_data, train_loader = self._get_data(flag='train')
         test_data, test_loader = self._get_data(flag='test')
-        self.model = self._build_model()
         time_now = time.time()
 
-        self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'model_channel_'+ str(channel_num) +'.pth')))
-        self.model.to(device)
         criterion = self._select_criterion()
         anomaly_criterion = nn.MSELoss(reduce=False)
         self.model.eval()
@@ -207,6 +207,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
                 score =anomaly_criterion(batch_x, outputs)
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
+                outputs = outputs.detach() 
 
         shapes = [np.array(e).shape for e in attens_energy]
         #print("Shapes of attens_energy elements:", shapes)
@@ -225,113 +226,151 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
                 outputs = self.model(batch_x, None, None, None)
                 # criterion
                 score = torch.mean(anomaly_criterion(batch_x, outputs), dim=-1)
-                test_loss.append(criterion(outputs,batch_x))
+                test_loss.append(criterion(outputs.cpu(),batch_x.cpu()))
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
-                test_labels.append(batch_y)
-
+                test_labels.append(batch_y.cpu())
+                #outputs = outputs.detach() 
+                
+        test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
         attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
         test_energy = np.array(attens_energy)
         combined_energy = np.concatenate([train_energy, test_energy], axis=0)
-        threshold = np.percentile(combined_energy, 100 - self.args.anomaly_ratio)
-        print("Threshold :", threshold)
-
-        # (3) evaluation on the test set
-        pred = (test_energy > threshold).astype(int)
-        test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
-        test_labels = np.array(test_labels)
-        gt = test_labels.astype(int)
-
-        print("pred:   ", pred.shape)
-        print("gt:     ", gt.shape)
+        #print(f"test_energy.shape:{test_energy.shape}")
+        #print(f"train_energy.shape:{train_energy.shape}")
+        #print(f"combined_energy.shape:{combined_energy.shape}")
+        #print(f"test_labels.shape:{test_labels.shape}")
         del batch_x, batch_y
-        del self.model
+        del score
+        del outputs
+        del train_data
+        del train_loader
+        del test_data
+        del test_loader
+        
         torch.cuda.empty_cache()
         
-        return channel_num, pred, gt, test_loss
+        return channel_num, combined_energy, test_energy, test_loss, test_labels
 
     def test(self, setting,train_loss, vali_loss, test_loss,model,seq_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,train_duration, test=0):
         self.channels_ = self.args.enc_in
         test_start_time = time.time()
-        channel_results = {'channel': [], 'gt': [], 'pred': []}
+        channel_results = {'channel': [], 'combined_energy': [],'test_energy': [],'test_labels': [],'pred': []}
         folder_path = './test_results/HTTP_benchmarkv3/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
-
+        device = self.device
         self.anomaly_criterion = nn.MSELoss(reduce=False)
 
         # Number of channels
         num_channels = self.args.enc_in
         test_losses =[]
-        # Arrays to store metrics
-        accuracies = np.zeros(num_channels)
-        precisions = np.zeros(num_channels)
-        recalls = np.zeros(num_channels)
-        f1s = np.zeros(num_channels)
 
         for channel_num in range(self.args.enc_in):
+            self.model = self._build_model()
+            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'model_channel_'+ str(channel_num) +'.pth')))
+            self.model.to(device)
+            print("Memory allocated before: ", torch.cuda.memory_allocated())
             print("Testing univariate model on channel number %i" % channel_num)
-            channel_num, pred, gt,test_loss_channel = self.predict_one_channel(setting, channel_num, self.args, self.device)
+            channel_num, combined_energy, test_energy, test_loss_channel,test_labels = self.predict_one_channel(setting, channel_num, self.args, self.device)
             channel_results['channel'].append(channel_num)
-            channel_results['gt'].append(pred)
-            channel_results['pred'].append(gt)
+            channel_results['combined_energy'].append(combined_energy)
+            channel_results['test_energy'].append(test_energy)
+            channel_results['test_labels'].append(test_labels)
             test_losses.append(test_loss_channel)
+            # Perform some operation (e.g., model training step)
+            self.model.cpu()
+            del self.model
+            torch.cuda.empty_cache()
+            print("Memory allocated after: ", torch.cuda.memory_allocated())
+            
+           
+
+            # Get CPU usage
+            cpu_usage = subprocess.run(["grep", "cpu ", "/proc/stat"], capture_output=True, text=True).stdout.split()
+            idle_time = int(cpu_usage[4])
+            total_time = sum(int(val) for val in cpu_usage[1:])
+
+            # Calculate CPU usage
+            cpu_percentage = 100 * (1 - idle_time / total_time)
+
+            # Get memory usage
+            mem_info = subprocess.run(["grep", "MemTotal\|MemFree\|MemAvailable", "/proc/meminfo"], capture_output=True, text=True).stdout
+            mem_info = {line.split(":")[0]: int(line.split()[1]) for line in mem_info.splitlines()}
+
+            total_memory_kb = mem_info["MemTotal"]
+            free_memory_kb = mem_info["MemFree"]
+            available_memory_kb = mem_info["MemAvailable"]
+
+            # Convert to MB/GB
+            total_memory_gb = total_memory_kb / 1024 / 1024
+            available_memory_gb = available_memory_kb / 1024 / 1024
+
+            # Print the results
+            print(f"CPU Usage: {cpu_percentage:.2f}%")
+            print(f"Total Memory: {total_memory_gb:.2f} GB")
+            print(f"Available Memory: {available_memory_gb:.2f} GB")
+
         test_end_time = time.time()
         test_duration = test_end_time - test_start_time
         total_time = train_duration + test_duration
+        
+        print(f"channel_results[combined_energy].shape:{np.array(channel_results['combined_energy']).shape}")
+        print(f"channel_results[test_energy].shape:{np.array(channel_results['test_energy']).shape}")
+        
+        #Take anomaly score from each channel and combine them with average into single anomaly score
+        
+        avg_combined_energy = np.mean(np.array(channel_results['combined_energy']),0)
+        avg_test_energy = np.mean(np.array(channel_results['test_energy']),0)
+        #for i, channel in enumerate(channel_results['channel']):
+        #print(f"avg_combined_energy.shape:{avg_combined_energy.shape}")
+        #print(f"avg_test_energy.shape:{avg_test_energy.shape}")
+        
+        threshold = np.percentile(avg_combined_energy, 100 - self.args.anomaly_ratio)
+        print("Threshold :", threshold)
 
-        for i, channel in enumerate(channel_results['channel']):
-            gt = channel_results['gt'][i]
-            pred = channel_results['pred'][i]
+        # (3) evaluation on the test set
+        pred = (avg_test_energy > threshold).astype(int)
+        #print(f"pred.shape:{pred.shape}")
 
-            # General Accuracy and Confusion Matrix
-            accuracy = accuracy_score(gt, pred)
-            cm = confusion_matrix(gt, pred)
+        test_labels = channel_results['test_labels'][0]
+        test_labels = np.array(test_labels)
+        gt = test_labels.astype(int)
 
-            # Normalize the confusion matrix by sequence length
-            cm_normalized = np.floor(cm / seq_len)
+        print("pred:   ", pred.shape)
+        print("gt:     ", gt.shape)
 
-            precision, recall, f_score, support = precision_recall_fscore_support(gt, pred, average='binary')
+        # General Accuracy and Confusion Matrix
+        accuracy = accuracy_score(gt, pred)
+        cm = confusion_matrix(gt, pred)
 
-            # Store results in arrays
-            accuracies[i] = accuracy
-            precisions[i] = precision
-            recalls[i] = recall
-            f1s[i] = f_score
+        # Normalize the confusion matrix by sequence length
+        cm_normalized = np.floor(cm / seq_len)
 
-            print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(accuracy, precision, recall, f_score))
+        precision, recall, f_score, support = precision_recall_fscore_support(gt, pred, average='binary')
 
-            # Compute the confusion matrix
-            print("Confusion Matrix (Normalized):")
-            print(cm_normalized)
+        print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(accuracy, precision, recall, f_score))
 
-            # Point-adjusted F-1
-            labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred)
-            accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
-            precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, support_point_adjusted = precision_recall_fscore_support(labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
-            cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
+        # Compute the confusion matrix
+        print("Confusion Matrix (Normalized):")
+        print(cm_normalized)
 
-            print("Accuracy_point_adjusted : {:0.4f}, Precision_point_adjusted : {:0.4f}, Recall_point_adjusted : {:0.4f}, F-score_point_adjusted : {:0.4f}".format(accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
-            print("Confusion Matrix (Point-adjusted):")
-            print(cm_point_adjusted)
+        # Point-adjusted F-1
+        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred)
+        accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
+        precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, support_point_adjusted = precision_recall_fscore_support(labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
+        cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
 
-            # Composite F1
-            true_events = get_events(gt)
-            prec_t, rec_e, fscore_c = get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
-            print("Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(prec_t, rec_e, fscore_c))
+        print("Accuracy_point_adjusted : {:0.4f}, Precision_point_adjusted : {:0.4f}, Recall_point_adjusted : {:0.4f}, F-score_point_adjusted : {:0.4f}".format(accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
+        print("Confusion Matrix (Point-adjusted):")
+        print(cm_point_adjusted)
 
-        # Compute average metrics
-        average_accuracy = np.mean(accuracies)
-        average_precision = np.mean(precisions)
-        average_recall = np.mean(recalls) 
-        average_f1 = np.mean(f1s)
+        # Composite F1
+        true_events = get_events(gt)
+        prec_t, rec_e, fscore_c = get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
+        print("Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(prec_t, rec_e, fscore_c))
+
         avg_test_loss= np.mean(torch.tensor(test_losses).cpu().numpy())
-
-        print("\nAverage Metrics across all channels:")
-        print(f"  Average Accuracy: {average_accuracy:.2f}")
-        print(f"  Average Precision: {average_precision:.2f}")
-        print(f"  Average Recall: {average_recall:.2f}")
-        print(f"  Average F1: {average_f1:.2f}")
 
         # Get the current date and time
         now = datetime.now()
