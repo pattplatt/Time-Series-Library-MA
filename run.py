@@ -197,16 +197,16 @@ if __name__ == '__main__':
                 args.des, ii)
             
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-            if args.task_name == 'anomaly_detection' or 'anomaly_detection_uae':
+            if args.task_name == 'anomaly_detection' or args.task_name == 'anomaly_detection_uae':
                 _, train, val, test, train_duration = exp.train(setting)
-            elif args.task_name == 'long_term_forecast' or 'enc_dec_anomaly':
+            elif args.task_name == 'long_term_forecast' or args.task_name == 'enc_dec_anomaly':
                 _, train, val, test, train_duration, anomaly_thresholds, k = exp.train(setting)
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            if args.task_name == 'anomaly_detection' or 'anomaly_detection_uae':
+            if args.task_name == 'anomaly_detection' or args.task_name == 'anomaly_detection_uae':
                 
                 exp.test(setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration)
-            elif args.task_name == 'long_term_forecast' or 'enc_dec_anomaly':
+            elif args.task_name == 'long_term_forecast' or args.task_name == 'enc_dec_anomaly':
                 exp.test(anomaly_thresholds,setting,train, val, test,args.model,args.seq_len,args.d_model,args.e_layers,args.d_ff,args.n_heads,args.train_epochs,args.loss,args.learning_rate,args.anomaly_ratio,args.embed,train_duration, k)
                 
             torch.cuda.empty_cache()

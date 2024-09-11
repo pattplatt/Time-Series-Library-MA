@@ -77,7 +77,7 @@ class Model(nn.Module):
         if self.task_name == 'imputation':
             self.projection = nn.Linear(
                 configs.d_model, configs.c_out, bias=True)
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             self.projection = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
             self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
         if self.task_name == 'classification':
@@ -100,19 +100,19 @@ class Model(nn.Module):
             [seasonal_init[:, -self.label_len:, :], zeros], dim=1)
         # enc
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
-        print(f"enc_embedding.shape:{enc_out.shape}")
+        #print(f"enc_embedding.shape:{enc_out.shape}")
         
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
-        print(f"enc_out.shape:{enc_out.shape}")
+        #print(f"enc_out.shape:{enc_out.shape}")
         
         # dec
         dec_out = self.dec_embedding(seasonal_init, x_mark_dec)
-        print(f"dec_out.shape:{dec_out.shape}")
+        #print(f"dec_out.shape:{dec_out.shape}")
         seasonal_part, trend_part = self.decoder(dec_out, enc_out, x_mask=None, cross_mask=None,
                                                  trend=trend_init)
         # final
         dec_out = trend_part + seasonal_part
-        print(f"dec_out.shape:{dec_out.shape}")
+        #print(f"dec_out.shape:{dec_out.shape}")
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
@@ -155,13 +155,13 @@ class Model(nn.Module):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast' or self.task_name =='enc_dec_anomaly':
             dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
             d = dec_out[:, -self.pred_len:, :]  # [B, L, D]
-            print(f"dec final out:{d.shape}")
+            #print(f"dec final out:{d.shape}")
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(
                 x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
             return dec_out  # [B, L, D]
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == 'anomaly_detection'or self.task_name == 'anomaly_detection_uae':
             dec_out = self.anomaly_detection(x_enc)
             return dec_out  # [B, L, D]
         if self.task_name == 'classification':
