@@ -28,6 +28,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
     def _build_model(self):
         args_model = copy.deepcopy(self.args)
         args_model.enc_in = 1
+        args_model.c_out = 1
         
         self.model = self.model_dict[self.args.model].Model(args_model).float()
         if self.args.use_multi_gpu and self.args.use_gpu:
@@ -52,29 +53,23 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         now = datetime.now()
         date_time_str = now.strftime("%Y-%m-%d_%H-%M")
         
-        folder_path = './test_results/HTTP_benchmarkv3/'
-        os.makedirs(folder_path, exist_ok=True)
-            
         path = os.path.join(self.args.checkpoints, setting)
-        os.makedirs(path, exist_ok=True)
-            
+        if not os.path.exists(path):
+            os.makedirs(path)
+
         ctx = mp.get_context('spawn')
-
         pool = ctx.Pool(processes=30)
+        criterion = self._select_criterion()
 
-        results = []
-        print("Memory allocated before: ", torch.cuda.memory_allocated())
-        
+        results = []        
         for channel_num in range(self.args.enc_in):
             self.model = self._build_model().cpu()
             model_optim = self._select_optimizer(self.model)
-            criterion = self._select_criterion()
-
+            
             args = (
                 train_loader, 
                 setting, 
                 channel_num, 
-                folder_path, 
                 path, 
                 self.args, 
                 model_optim, 
@@ -84,14 +79,13 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
                 vali_loader
             )
             results.append(pool.apply_async(self.fit_one_channel, args=args))
+            
         return_values = [result.get() for result in results]
         pool.close()
         pool.terminate()
         pool.join()
-        print("Memory allocated after: ", torch.cuda.memory_allocated())
         
         # Collect and assign models and losses
-        #self.model = [None] * self.args.enc_in
         train_loss, val_loss, test_loss = [], [], []
         
         for return_value in return_values:
@@ -104,7 +98,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         return self.model, train_loss, val_loss, test_loss, train_duration
 
     @staticmethod
-    def fit_one_channel(train_loader, setting, channel_num, folder_path, path, args, model_optim, criterion, model, device,vali_loader):
+    def fit_one_channel(train_loader, setting, channel_num, path, args, model_optim, criterion, model, device,vali_loader):
         time_now = time.time()
         early_stopping = EarlyStopping(patience=args.patience, verbose=True)
         model.to(device)
@@ -125,7 +119,6 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
                 outputs = model(batch_x, None, None, None)
                 f_dim = -1 if args.features == 'MS' else 0
                 outputs = outputs[:, :, f_dim:]
-
                 loss = criterion(outputs, batch_x)
                 train_loss.append(loss.item())
                 loss.backward()
@@ -150,6 +143,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
                 # If we reach the end of the validation set, reinitialize the iterator
                 #vali_iter = iter(vali_loader)
                 #batch_x_val, _ = next(vali_iter)
+                
             print(f"Validating channel {channel_num}")
             # Process validation batch
             
@@ -184,156 +178,198 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         torch.cuda.empty_cache()
         
         return train_loss_avg, val_loss_avg, test_loss, channel_num
-
+    
     @torch.no_grad()
-    def predict_one_channel(self,setting, channel_num, args, device):
-        train_data, train_loader = self._get_data(flag='train')
-        test_data, test_loader = self._get_data(flag='test')
+    @staticmethod
+    def predict_one_channel(train_loader, test_loader, setting, channel_num, saved_array_path, args, anomaly_criterion, model, device):
         time_now = time.time()
-
-        criterion = self._select_criterion()
-        anomaly_criterion = nn.MSELoss(reduce=False)
-        self.model.eval()
-        attens_energy = []
+        model.to(device)
+        model.eval()
         test_loss = []
+        
+        # Get number of samples in train_data and test_data
+        n_train_samples = len(train_data)
+        n_test_samples = len(test_data)
 
-        # (1) stastic on the train set
-        with torch.no_grad():  
-            for i, (batch_x, batch_y) in enumerate(train_loader):
+        # Preallocate arrays
+        train_energy = np.zeros(n_train_samples*args.seq_len)
+        test_energy = np.zeros(n_test_samples*args.seq_len)
+        test_labels = np.zeros(n_test_samples*args.seq_len)
+
+        # Process train set
+        idx = 0
+        with torch.no_grad():
+            for batch_x, _ in train_loader:
+                batch_size = batch_x.size(0)
                 batch_x = batch_x[:, :, channel_num:channel_num+1].float().to(device)
-                outputs = self.model(batch_x, None, None, None)
+                outputs = model(batch_x, None, None, None)
                 f_dim = -1 if args.features == 'MS' else 0
                 outputs = outputs[:, :, f_dim:]
-                score =anomaly_criterion(batch_x, outputs)
-                score = score.detach().cpu().numpy()
-                attens_energy.append(score)
-                outputs = outputs.detach() 
-
-        shapes = [np.array(e).shape for e in attens_energy]
-        #print("Shapes of attens_energy elements:", shapes)
-        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
-        train_energy = np.array(attens_energy)
-
-        # (2) find the threshold
-        attens_energy = []
-        test_labels = []
-        with torch.no_grad():
-            for i, (batch_x, batch_y) in enumerate(test_loader):
-                batch_x = batch_x[:, :, channel_num:channel_num+1]
-                batch_x = batch_x.float().to(self.device)
-
-                # reconstruction
-                outputs = self.model(batch_x, None, None, None)
-                # criterion
-                score = torch.mean(anomaly_criterion(batch_x, outputs), dim=-1)
-                test_loss.append(criterion(outputs.cpu(),batch_x.cpu()))
-                score = score.detach().cpu().numpy()
-                attens_energy.append(score)
-                test_labels.append(batch_y.cpu())
-                #outputs = outputs.detach() 
+                score = anomaly_criterion(batch_x, outputs)
+                score = torch.mean(score, dim=2)    
+                print("score after mean", score.shape)
                 
-        test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
-        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
-        test_energy = np.array(attens_energy)
+                score = score.view(-1).cpu().numpy()
+                print("score after flatten", score.shape)                
+                train_energy[idx:idx + batch_size*args.seq_len] = score
+                idx += batch_size
+                del batch_x, outputs, score  # Free up memory
+                torch.cuda.empty_cache()
+
+        # Process test set
+        idx = 0
+        with torch.no_grad():
+            for batch_x, batch_y in test_loader:
+                batch_size = batch_x.size(0)
+                batch_x = batch_x[:, :, channel_num:channel_num+1].float().to(device)
+                outputs = model(batch_x, None, None, None)
+                f_dim = -1 if args.features == 'MS' else 0
+                outputs = outputs[:, :, f_dim:]
+                
+                score = anomaly_criterion(batch_x, outputs)
+                #print("score 1", score.shape)
+                score = torch.mean(score, dim=2)    
+                #print("score after mean", score.shape)
+                score = score.view(-1).cpu().numpy()
+                #print("score after flatten", score.shape)
+                
+                test_loss.append(criterion(outputs.cpu(), batch_x.cpu()).item())                
+                test_energy[idx:idx + batch_size*args.seq_len] = score
+                #print("batch_y:",batch_y.shape)
+                test_labels[idx:idx + batch_size*args.seq_len] = batch_y.view(-1).cpu().numpy()
+                idx += batch_size
+                del batch_x, batch_y, outputs, score  # Free up memory
+                torch.cuda.empty_cache()
+
+        # Combine train and test energies
         combined_energy = np.concatenate([train_energy, test_energy], axis=0)
-        #print(f"test_energy.shape:{test_energy.shape}")
-        #print(f"train_energy.shape:{train_energy.shape}")
-        #print(f"combined_energy.shape:{combined_energy.shape}")
-        #print(f"test_labels.shape:{test_labels.shape}")
-        del batch_x, batch_y
-        del score
-        del outputs
-        del train_data
-        del train_loader
-        del test_data
-        del test_loader
-        
+
+        # Save arrays
+        np.save(os.path.join(array_path, f"combined_energy_channel_{channel_num}.npy"), combined_energy)
+        print(f"Saved combined_energy_channel_{channel_num}.npy")
+
+        np.save(os.path.join(array_path, f"test_energy_channel_{channel_num}.npy"), test_energy)
+        print(f"Saved test_energy_channel_{channel_num}.npy")
+
+        # Clean up
+        del train_data, train_loader, test_data, test_loader, train_energy, test_energy, combined_energy, model
         torch.cuda.empty_cache()
-        
-        return channel_num, combined_energy, test_energy, test_loss, test_labels
+
+        return channel_num, test_loss, test_labels
 
     def test(self, setting,train_loss, vali_loss, test_loss,model,seq_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,train_duration, test=0):
+        
+        train_data, train_loader = self._get_data(flag='train')
+        test_data, test_loader = self._get_data(flag='test')        
         self.channels_ = self.args.enc_in
-        test_start_time = time.time()
-        channel_results = {'channel': [], 'combined_energy': [],'test_energy': [],'test_labels': [],'pred': []}
-        folder_path = './test_results/HTTP_benchmarkv3/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
+        channel_results = {'channel': []}
+        
+        saved_array_path = os.path.join(self.args.checkpoints, setting,"test_arrays")
+        if not os.path.exists(saved_array_path):
+            os.makedirs(saved_array_path)
+        
+        test_results_path = './test_results/'+ setting
+        if not os.path.exists(test_results_path):
+            os.makedirs(test_results_path)
+
         device = self.device
-        self.anomaly_criterion = nn.MSELoss(reduce=False)
+        anomaly_criterion = nn.MSELoss(reduce=False)
 
         # Number of channels
         num_channels = self.args.enc_in
         test_losses =[]
-
+        memory_stats = []
+        
+        ctx = mp.get_context('spawn')
+        pool = ctx.Pool(processes=30)
+        results=[]
+        test_start_time = time.time()
         for channel_num in range(self.args.enc_in):
-            self.model = self._build_model()
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'model_channel_'+ str(channel_num) +'.pth')))
-            self.model.to(device)
-            print("Memory allocated before: ", torch.cuda.memory_allocated())
+            model = self._build_model().cpu()
+            model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'model_channel_'+ str(channel_num) +'.pth')))
+            #def predict_one_channel(train_loader, test_loader, setting, channel_num, saved_array_path,args, model_optim, criterion, model, device):
+            args = (
+                train_loader,
+                test_loader,
+                setting, 
+                channel_num, 
+                saved_array_path, 
+                self.args,
+                anomaly_criterion, 
+                model, 
+                self.device,
+            )
             print("Testing univariate model on channel number %i" % channel_num)
-            channel_num, combined_energy, test_energy, test_loss_channel,test_labels = self.predict_one_channel(setting, channel_num, self.args, self.device)
-            channel_results['channel'].append(channel_num)
-            channel_results['combined_energy'].append(combined_energy)
-            channel_results['test_energy'].append(test_energy)
-            channel_results['test_labels'].append(test_labels)
-            test_losses.append(test_loss_channel)
-            # Perform some operation (e.g., model training step)
-            self.model.cpu()
-            del self.model
-            torch.cuda.empty_cache()
-            print("Memory allocated after: ", torch.cuda.memory_allocated())
+            results.append(pool.apply_async(self.predict_one_channel, args=args))
             
-           
+            return_values = [result.get() for result in results]
 
-            # Get CPU usage
-            cpu_usage = subprocess.run(["grep", "cpu ", "/proc/stat"], capture_output=True, text=True).stdout.split()
-            idle_time = int(cpu_usage[4])
-            total_time = sum(int(val) for val in cpu_usage[1:])
+            pool.close()
+            pool.terminate()
+            pool.join()
 
-            # Calculate CPU usage
-            cpu_percentage = 100 * (1 - idle_time / total_time)
+            #print("Memory allocated before: ", torch.cuda.memory_allocated())
+            #channel_num, test_loss_channel,test_labels = self.predict_one_channel(setting, channel_num, self.args, self.device, saved_array_path)
+            channel_results['channel'].append(channel_num)
+            test_losses.append(test_loss_channel)
+
+            self.model.cpu()
+            del self.model, channel_num, test_loss_channel
+            torch.cuda.empty_cache()
+            
+            #print("Memory allocated after: ", torch.cuda.memory_allocated())
+            self.test_labels = test_labels
 
             # Get memory usage
             mem_info = subprocess.run(["grep", "MemTotal\|MemFree\|MemAvailable", "/proc/meminfo"], capture_output=True, text=True).stdout
             mem_info = {line.split(":")[0]: int(line.split()[1]) for line in mem_info.splitlines()}
 
-            total_memory_kb = mem_info["MemTotal"]
             free_memory_kb = mem_info["MemFree"]
             available_memory_kb = mem_info["MemAvailable"]
 
             # Convert to MB/GB
-            total_memory_gb = total_memory_kb / 1024 / 1024
             available_memory_gb = available_memory_kb / 1024 / 1024
 
             # Print the results
-            print(f"CPU Usage: {cpu_percentage:.2f}%")
-            print(f"Total Memory: {total_memory_gb:.2f} GB")
-            print(f"Available Memory: {available_memory_gb:.2f} GB")
-
+            print(f"Available Memory: {available_memory_gb:.6f} GB")
+            memory_stats.append(available_memory_gb)
+            
         test_end_time = time.time()
         test_duration = test_end_time - test_start_time
-        total_time = train_duration + test_duration
+        total_time = train_duration + test_duration        
+        combined_energy_arrays = []
+        combined_test_energy_arrays = []
+
+        # Load arrays from disk
+        for i in range(self.args.enc_in):
+            combined_energy_array_filename = f"combined_energy_channel_{i}.npy"  # Corrected filename formatting            
+            combined_energy = np.load(os.path.join(saved_array_path, combined_energy_array_filename))
+            combined_energy_arrays.append(combined_energy)
+            print(f"Loaded {combined_energy_array_filename} with shape {combined_energy.shape}")
+            
+            combined_test_array_filename = f"test_energy_channel_{i}.npy"  # Corrected filename formatting
+            test_energy = np.load(os.path.join(saved_array_path, combined_test_array_filename))
+            combined_test_energy_arrays.append(test_energy)
+            print(f"Loaded {combined_test_array_filename} with shape {test_energy.shape}")            
+            
+        #Take anomaly scores from each row and combine them with average into single anomaly score
+        stacked_combined_energy_array = np.stack(combined_energy_arrays, axis=0)
+        stacked_combined_test_array = np.stack(combined_test_energy_arrays, axis=0)
+        print("stacked_combined_energy_array:",stacked_combined_energy_array.shape)
+        print("stacked_combined_test_array:",stacked_combined_test_array.shape)
         
-        print(f"channel_results[combined_energy].shape:{np.array(channel_results['combined_energy']).shape}")
-        print(f"channel_results[test_energy].shape:{np.array(channel_results['test_energy']).shape}")
-        
-        #Take anomaly score from each channel and combine them with average into single anomaly score
-        
-        avg_combined_energy = np.mean(np.array(channel_results['combined_energy']),0)
-        avg_test_energy = np.mean(np.array(channel_results['test_energy']),0)
-        #for i, channel in enumerate(channel_results['channel']):
-        #print(f"avg_combined_energy.shape:{avg_combined_energy.shape}")
-        #print(f"avg_test_energy.shape:{avg_test_energy.shape}")
-        
+        avg_combined_energy = np.mean(stacked_combined_energy_array,0)
+        avg_test_energy = np.mean(stacked_combined_test_array,0)
+        print("avg_combined_energy:",avg_combined_energy.shape)
+        print("avg_test_energy:",avg_test_energy.shape)
+
         threshold = np.percentile(avg_combined_energy, 100 - self.args.anomaly_ratio)
         print("Threshold :", threshold)
 
         # (3) evaluation on the test set
         pred = (avg_test_energy > threshold).astype(int)
-        #print(f"pred.shape:{pred.shape}")
 
-        test_labels = channel_results['test_labels'][0]
+        test_labels = self.test_labels
         test_labels = np.array(test_labels)
         gt = test_labels.astype(int)
 
@@ -387,9 +423,13 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         metrics_fpa = [self.args.model, "Fpa", f"{accuracy_point_adjusted:.4f}", f"{precision_point_adjusted:.4f}", f"{recall_point_adjusted:.4f}", f"{f_score_point_adjusted:.4f}", f"{cm_point_adjusted}"]
         metrics_fc = [self.args.model, "Fc", f"{accuracy_point_adjusted:.4f}", f"{prec_t:.4f}", f"{rec_e:.4f}", f"{fscore_c:.4f}", f"-"]
 
-        file_path = os.path.join(folder_path, "results_")
+        file_path = os.path.join(test_results_path, "results_")
         file_exists = os.path.isfile(file_path)
-                      
+             
+        with open("Memory"+ ".csv", 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(memory_stats)        
+            
         with open(file_path + "parameters"+ ".csv", 'a', newline='') as f:
             writer = csv.writer(f)
             if not file_exists:
