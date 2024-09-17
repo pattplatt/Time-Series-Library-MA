@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, visual, adjustment, get_gaussian_kernel_scores, get_dynamic_scores, threshold_and_predict
+from utils.tools import EarlyStopping, adjust_learning_rate, visual, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict
 from utils.metrics import metric
 import torch
 import torch.nn as nn
@@ -9,12 +9,10 @@ import os
 import time
 import warnings
 import numpy as np
-from utils.dtw_metric import dtw,accelerated_dtw
 from utils.augmentation import run_augmentation,run_augmentation_single
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
-import csv
 
 warnings.filterwarnings('ignore')
 
@@ -76,7 +74,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
 
                 loss = criterion(pred, true)
 
-                total_loss.append(loss)
+                total_loss.append(loss.item())
         total_loss = np.average(total_loss)
         self.model.train()
         return total_loss
@@ -86,7 +84,6 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
         attens_energy = []
-        total_outputs=[]
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
@@ -147,12 +144,10 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
                     #print("train: outputs.shape",outputs.shape)
-                    #total_outputs.append(outputs)
                 
                 score = torch.mean(outputs, dim=-1) 
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
-                #total_outputs_tensor=torch.stack(total_outputs, dim=0)
                 
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
@@ -171,16 +166,11 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
-            #average of train loss
-            k = self.args.k_value
-            anomaly_threshold = np.average(train_loss) + (np.std(train_loss)) + k
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
-            #test_loss = self.vali(test_data, test_loader, criterion)
-            test_loss = 0
         
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
+                epoch + 1, train_steps, train_loss, vali_loss))
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -188,8 +178,6 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
             
-        #total_outputs_tensor = total_outputs_tensor.view(total_outputs_tensor.shape[0]*total_outputs_tensor.shape[1], 48, 123)
-        #total_outputs_tensor=total_outputs_tensor.cpu().detach().numpy() 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         
@@ -197,30 +185,20 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         train_duration = train_end_time - training_start_time
 
         print(f"Train_loss: {train_loss}")
-        print(f"anomaly_threshold: {anomaly_threshold}")
         
-        return self.model, train_loss, vali_loss, test_loss, train_duration, anomaly_threshold, k
-    
-    #"###########################################"
-    
-    #"###########################################"
+        return self.model, train_loss, vali_loss, train_duration # anomaly_threshold, k
     
     #"###########################################"
 
-    def test(self, anomaly_threshold, setting,train_loss, vali_loss, test_loss,model,seq_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,train_duration, k, test=0):
+    def test(self, setting,train_loss, vali_loss,train_duration, test=0):
         test_data, test_loader = self._get_data(flag='test')
-        
-        #print("test_data.__len__",test_data.__len__())
-        #batch_x, batch_y, batch_x_mark, batch_y_mark=test_data.__getitem__(0)
-        #print("batch_x:",batch_x.shape)
-        #print("batch_y:",batch_y.shape)
-        #batch_x, batch_y, batch_x_mark, batch_y_mark=test_data.__getitem__(99)
         
         test_start_time = time.time()
         if test:
             print('loading model')
             self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
         criterion = self._select_criterion()
+        anomaly_criterion = nn.MSELoss(reduction='none')
         preds = []
         trues = []
         anomaly_preds=[]
@@ -229,7 +207,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
         total_losses = []
-        
+        l1_loss = nn.L1Loss()
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark,seq_labels) in enumerate(test_loader):
@@ -258,12 +236,18 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, :]
                 batch_y = batch_y[:, -self.args.pred_len:, :].to(self.device)
+                
+                loss = anomaly_criterion(outputs, batch_y)
+                #loss = loss.mean(dim=0) 
+                print("loss.shape:",loss.shape)
+                total_losses.append(loss.cpu().numpy())
                 pred = outputs.detach().cpu()
-                true = batch_x.detach().cpu()
+                #true = batch_x.detach().cpu()
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
-                #print("outputs.shape:",outputs.shape,"batch_y.shape",batch_y.shape)
-
+                print("outputs.shape:",outputs.shape,"batch_y.shape",batch_y.shape)
+ 
+                
                 if test_data.scale and self.args.inverse:
                     shape = outputs.shape
                     outputs = test_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
@@ -271,40 +255,16 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
 
                 outputs = outputs[:, :, f_dim:]
                 batch_y = batch_y[:, :, f_dim:]
-                #print("outputs.shape",outputs.shape)
+                #print("batch_y.shape",batch_y.shape)
                 pred = outputs
+
+                
                 true = batch_y
                 preds.append(pred)
                 trues.append(true)
                 labels.append(seq_labels)
-                #print(f"preds.shape:{np.array(preds).shape}")
-                #print(f"outputs.shape:{outputs.shape}")
                 labels_ = torch.stack(labels)
-                #print(f"labels.shape:{labels_.shape}")
-                
-            preds=np.array(preds)
-                
-            for i in range(preds.shape[0]):
-                for n in range(preds.shape[1]):
-                    for l in range(preds.shape[2]):
                     
-                        batch = preds[i][n][l]
-                        #print(f"batch.shape:{batch.shape}")
-                        #das hier sind die MSE errors als anomaly scores
-                        l1_loss = nn.L1Loss()
-
-                        loss = criterion(torch.from_numpy(batch), torch.from_numpy(batch_y[l]))
-                        #print(f"loss: {loss}")
-                        #print(f"anomaly_threshold: {anomaly_threshold}")
-                        total_losses.append(loss)
-                    
-                    #das raus, anomaly_classification wird erst zum schluss mit allen punkten gemacht
-                    #anomaly_classification = loss > anomaly_threshold
-                    #anomaly_classification_array = np.full(pred.shape[1], anomaly_classification)
-       #print("anomaly_classification_array.shape",np.array(anomaly_classification_array).shape)
-                    #print("anomaly_classification_array.flatten.shape",np.array(anomaly_classification_array).flatten().shape)
-                    #anomaly_preds.append(anomaly_classification_array)
-                
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
                     if test_data.scale and self.args.inverse:
@@ -313,20 +273,29 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
-        
+                    
+        preds=np.array(preds)
+        print("preds.shape:",preds.shape)
+        #(total_batches, batch_size, pred_len, num_channels)
         total_losses = np.array(total_losses)
         print(f"total_losses.shape:{total_losses.shape}")
+        #(total_batches, batch_size, pred_len), compute mean over the channels
+        total_losses = total_losses.mean(axis=-1) 
+        print(f"mean total_losses.shape:{total_losses.shape}")
+        #(total_batches * batch_size * pred_len)
+        total_losses = total_losses.flatten()
+        #Result: All anomaly scores in a single 1D array, mean over the channels
+        print(f"flatten total_losses.shape:{total_losses.shape}")
         
         #this should be a run parameter 
-        kernel_sigma = 3 
+        kernel_sigma = 3
         #input only scores with channels and time-points
         #score_t_test, score_tc_test = get_gaussian_kernel_scores(total_losses,None,kernel_sigma)
-        score_t_test, _, _, _ =  get_dynamic_scores(None, None, None, total_losses, long_window=100000, short_window=100)
+        score_t_test, score_tc_test, _, _ =  get_dynamic_scores(None, None, None,total_losses, long_window=2000, short_window=100)
         
         preds = np.array(preds)
         trues = np.array(trues)
         #print('preds shape:', preds.shape)
-        #print('trues shape:', trues.shape)
         
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
@@ -359,75 +328,48 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         test_duration = test_end_time - test_start_time
         total_time = train_duration + test_duration
         
-        labels = torch.stack(labels, dim=0)
-        labels = labels.flatten()
+        gt = torch.stack(labels, dim=0)
+        gt = gt.flatten()
+        print("score_t_test.shape",score_t_test.shape)
+        print("gt.shape",gt.shape)
         
-        print(f"labels.shape:{labels.shape}")
         
-        opt_thres, pred_labels, avg_prec, auroc = threshold_and_predict(score_t_test,labels,true_events=None,logger=None,test_anom_frac=0.1,thres_method="tail_prob",return_auc=True,)
-        accuracy = accuracy_score(labels, pred_labels)
-        precision, recall, f_score, support = precision_recall_fscore_support(labels, pred_labels, average='binary')
-        cm = confusion_matrix(labels, pred_labels)
+        opt_thres, pred_labels, avg_prec, auroc = threshold_and_predict(score_t_test,gt,true_events=None,logger=None,test_anom_frac=0.1,thres_method="best_f1_test",return_auc=True,)
+       
+        print(f"opt_thres:{opt_thres}, avg_prec:{avg_prec}, auroc:{auroc}")
         
-        #(4) detection adjustment
-        #if self.args.point_adjustment:
-        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(labels, pred_labels)
-        accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
-        precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, support_point_adjusted = precision_recall_fscore_support(labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
-        cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
-        
-        #print("labels.shape",labels.shape)
-        #print("anomaly_preds.shape",anomaly_preds.shape)
-        
-        print("accuracy:",accuracy)
-        print("accuracy_point_adjusted:",accuracy_point_adjusted)
-        print("Anomaly Threshold:",anomaly_threshold)
-        print("test loss average:",np.average(total_losses), "test loss min:", np.min(total_losses), "test loss max:", np.max(total_losses))
-        print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
-            accuracy, precision,
-            recall, f_score))
-        print("Accuracy_point_adjusted : {:0.4f}, Precision_point_adjusted : {:0.4f}, Recall_point_adjusted : {:0.4f}, F-score_point_adjusted : {:0.4f} ".format(
-            accuracy_point_adjusted, precision_point_adjusted,
-            recall_point_adjusted, f_score_point_adjusted))
-        print("cm")
-        print(cm)
-        print("cm_point_adjusted")
-        print(cm_point_adjusted)
-        #print("total number of predictions: ", len(labels)
+        # Call the helper function to evaluate metrics
+        metrics = evaluate_metrics(gt, pred_labels, seq_len=self.args.seq_len)
 
-        parameters_header = ["Model", "k_value", "Train loss", "Vali loss", "Test loss", "Seq len", "Dim Model", "E layers", "Dim ff", "n_heads", "Train epochs", "Loss", "Learning rate", "Anomaly ratio", "embed", "Total Duration (s)", "Train Duration (s)", "Test Duration (s)"]
-        parameters = [model, k, f"{train_loss:.6f}", f"{vali_loss:.6f}", f"{np.average(total_losses):.6f}", seq_len, d_model, e_layers, d_ff, n_heads, train_epochs, criterion, learning_rate, anomaly_ratio, embed,f"{total_time:.2f}", f"{train_duration:.2f}", f"{test_duration:.2f}"]
-        metrics_f1_header = ["Model", "Accuracy", "Precision", "Recall", "F-score", "Confusion Matrix"]
-        metrics_f1 = [model, f"{accuracy:.4f}", f"{precision:.4f}", f"{recall:.4f}", f"{f_score:.4f}", f"{cm}"]
-        metrics_fpa_header = ["Model", "Accuracy_fpa", "Precision_fpa", "Recall_fpa", "F-score_fpa", "Confusion Matrix_fpa"]
-        metrics_fpa = [model, f"{accuracy_point_adjusted:.4f}", f"{precision_point_adjusted:.4f}", f"{recall_point_adjusted:.4f}", f"{f_score_point_adjusted:.4f}", f"{cm_point_adjusted}"]
+        avg_test_loss = np.mean(total_losses)
+        avg_train_loss = np.mean(train_loss)
+        avg_vali_loss = np.mean(vali_loss)
 
-        file_path = os.path.join(folder_path, "results_anomaly_enc_dec_slide_test.csv")
-        file_exists = os.path.isfile(file_path)
-
-        with open(file_path, 'a', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(parameters_header)
-            writer.writerow(parameters)
-            writer.writerow([""])
-            writer.writerow(metrics_f1_header)
-            writer.writerow(metrics_f1)
-            writer.writerow([""])
-            writer.writerow(metrics_fpa_header)
-            writer.writerow(metrics_fpa)
-
-        #mae, mse, rmse, mape, mspe = metric(anomaly_pred, random_bools)
-        #print('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
-        #f = open("result_long_term_forecast.txt", 'a')
-        #f.write(setting + "  \n")
-        #f.write('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
-        #f.write('\n')
-        #f.write('\n')
-        #f.close()
-
-        #np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
-        #np.save(folder_path + 'pred.npy', preds)
-        #np.save(folder_path + 'true.npy', trues)
+        test_results_path = os.path.join('./test_results/', setting)
+        if not os.path.exists(test_results_path):
+            os.makedirs(test_results_path)
+        export_memory_usage = False
+        write_to_csv(
+            model_name=self.args.model,
+            avg_train_loss=avg_train_loss,
+            avg_vali_loss=avg_vali_loss,
+            avg_test_loss=avg_test_loss,
+            seq_len=self.args.seq_len,
+            d_model=self.args.d_model,
+            e_layers=self.args.e_layers,
+            d_ff=self.args.d_ff,
+            n_heads=self.args.n_heads,
+            train_epochs=self.args.train_epochs,
+            learning_rate=self.args.learning_rate,
+            anomaly_ratio=self.args.anomaly_ratio,
+            embed=self.args.embed,
+            total_time=total_time,
+            train_duration=train_duration,
+            test_duration=test_duration,
+            metrics=metrics,
+            test_results_path=test_results_path,
+            setting=setting,
+            export_memory_usage=export_memory_usage
+        )
 
         return
