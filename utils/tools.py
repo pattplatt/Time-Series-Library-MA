@@ -369,7 +369,6 @@ def threshold_and_predict(
     else:
         test_anom_frac = (np.sum(y_test)) / len(y_test)
         
-    print("test_anom_frac:",test_anom_frac)
     auroc = None
     avg_prec = None
     if thres_method == "thresholded_score":
@@ -670,3 +669,80 @@ def write_to_csv(
         with open("Memory.csv", 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(memory_stats)
+
+def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_dyn_gauss_conv, seq_len,score_t_train_dyn=None,combined_energy=None,combined_score_t_dyn_gauss_conv=None):
+    """
+    Compute metrics using different thresholding methods and scoring functions.
+
+    Args:
+        test_energy (np.array): The anomaly scores for the test data.
+        gt (np.array): Ground truth labels for the test data.
+        true_events (dict): Dictionary of true anomaly events.
+        seq_len (int): Sequence length used in the model.
+        score_t_test_dyn (np.array, optional): Dynamic scores for the test data.
+        score_t_train_dyn (np.array, optional): Dynamic scores for the training data.
+        score_t_dyn_gauss_conv (np.array, optional): Dynamic Gaussian convolved scores for the test data.
+        combined_energy (np.array, optional): Combined anomaly scores from training and test data.
+        combined_score_t_dyn_gauss_conv (np.array, optional): Combined dynamic Gaussian convolved scores from training and test data.
+
+    Returns:
+        dict: A dictionary containing computed metrics.
+    """
+    metrics = {}
+
+    # Prepare score dictionaries
+    scores = {
+        'default': test_energy,
+        'dyn': score_t_test_dyn,
+        'dyn_gauss': score_t_dyn_gauss_conv,
+    }
+
+    combined_scores = {
+        'default': combined_energy,  # Could be None
+    }
+
+    # Add 'dyn' scores if provided
+
+    if score_t_train_dyn is not None:
+        combined_scores['dyn'] = np.concatenate([score_t_train_dyn, score_t_test_dyn])
+    else:
+        combined_scores['dyn'] = None
+
+    # Add 'dyn_gauss' scores if provided
+    if combined_score_t_dyn_gauss_conv is not None:
+        combined_scores['dyn_gauss'] = combined_score_t_dyn_gauss_conv
+    else:
+        combined_scores['dyn_gauss'] = None
+
+    # Thresholding methods to evaluate
+    thres_methods = ['best_f1_test', 'top_k_time', 'tail_prob']
+    metrics_methods = {}
+
+    for thres_method in thres_methods:
+        method_metrics = {}
+        for score_type in scores.keys():
+            score = scores[score_type]
+            if score is None:
+                continue  # Skip if score is not provided
+            # Prepare additional arguments for threshold_and_predict
+            thres_args = {}
+            if thres_method == 'top_k_time' or (thres_method == 'tail_prob' and score_type == 'default'):
+                thres_args['score_t_test_and_train'] = combined_scores[score_type]
+            # If combined_scores[score_type] is None, threshold_and_predict should handle it
+
+            # Apply threshold and predict
+            thres, pred_labels, avg_prec, auroc = threshold_and_predict(
+                score, gt, true_events=true_events, logger=None,
+                thres_method=thres_method, return_auc=True, **thres_args
+            )
+
+            # Evaluate metrics
+            eval_metrics = evaluate_metrics(gt, pred_labels, auroc, seq_len=seq_len)
+
+            # Store metrics
+            method_metrics[f'{score_type}_metrics_{thres_method}'] = eval_metrics
+
+        metrics[f'metrics_{thres_method}'] = method_metrics
+
+    return metrics
+
