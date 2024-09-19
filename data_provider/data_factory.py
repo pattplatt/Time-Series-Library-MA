@@ -86,3 +86,32 @@ def data_provider(args, flag):
             num_workers=args.num_workers,
             drop_last=drop_last)
         return data_set, data_loader
+
+def get_events(y_test, outlier=1, normal=0, breaks=[]):
+    events = dict()
+    label_prev = normal
+    event = 0  # corresponds to no event
+    event_start = 0
+    for tim, label in enumerate(y_test):
+        if label == outlier:
+            if label_prev == normal:
+                event += 1
+                event_start = tim
+            elif tim in breaks:
+                # A break point was hit, end current event and start new one
+                event_end = tim - 1
+                events[event] = (event_start, event_end)
+                event += 1
+                event_start = tim
+
+        else:
+            # event_by_time_true[tim] = 0
+            if label_prev == outlier:
+                event_end = tim - 1
+                events[event] = (event_start, event_end)
+        label_prev = label
+
+    if label_prev == outlier:
+        event_end = tim - 1
+        events[event] = (event_start, event_end)
+    return events

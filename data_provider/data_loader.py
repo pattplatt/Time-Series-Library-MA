@@ -708,10 +708,6 @@ class UEAloader(Dataset):
         else:
             self.max_seq_len = lengths[0, 0]
 
-        # First create a (seq_len, feat_dim) dataframe for each sample, indexed by a single integer ("ID" of the sample)
-        # Then concatenate into a (num_samples * seq_len, feat_dim) dataframe, with multiple rows corresponding to the
-        # sample index (i.e. the same scheme as all datasets in this project)
-
         df = pd.concat((pd.DataFrame({col: df.loc[row, col] for col in df.columns}).reset_index(drop=True).set_index(
             pd.Series(lengths[row, 0] * [row])) for row in range(df.shape[0])), axis=0)
 
@@ -756,19 +752,23 @@ class WADISegLoader(Dataset):
         self.win_size = win_size
         self.scaler = PowerTransformer(method='yeo-johnson')
         self.root_path = root_path
+        self.scale =False 
         
-        self.train = np.load(os.path.join(root_path, "WADI_train_transformed.npy"))
-        self.test = np.load(os.path.join(root_path, "WADI_test_transformed.npy"))  
-        self.test_labels = np.load(os.path.join(root_path, "WADI_test_label.npy"))
-
-        #self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
-        #self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
-        #self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
+        if root_path == "./dataset/anomaly_detection/WADI/WADI2019_power_transformed":
+            self.train = np.load(os.path.join(self.root_path, "WADI_train_transformed.npy"))
+            self.test = np.load(os.path.join(self.root_path, "WADI_test_transformed.npy"))
+            self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+        else:
+            self.scale = True
+            self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
+            self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
+            self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
       
         data_len = len(self.train)
-        #self.scaler.fit(self.train)
-        #self.train = self.scaler.transform(self.train)           
-        #self.test = self.scaler.transform(self.test)
+        if self.scale == True:
+            self.scaler.fit(self.train)
+            self.train = self.scaler.transform(self.train)           
+            self.test = self.scaler.transform(self.test)
         self.val = self.train[(int)(data_len * 0.8):]
         
         if args.task_name == 'anomaly_detection_uae':     
@@ -780,8 +780,6 @@ class WADISegLoader(Dataset):
                 if X_max - X_min != 0:  # Avoid division by zero
                     self.train[:, dim] = (self.train[:, dim] - X_min) / (X_max - X_min)
                 else:
-                    #print(f"Warning: Dimension {dim} has constant values. Skipping normalization.")
-                    # If X_max == X_min, then the entire column has the same value. You may skip normalization or set it to 0.
                     self.train[:, dim] = 0
 
             for dim in range(len(self.test[0])):            
@@ -792,8 +790,6 @@ class WADISegLoader(Dataset):
                 if X_max - X_min != 0:  # Avoid division by zero
                     self.test[:, dim] = (self.test[:, dim] - X_min) / (X_max - X_min)
                 else:
-                    #print(f"Warning: Dimension {dim} has constant values. Skipping normalization.")
-                    # If X_max == X_min, then the entire column has the same value. You may skip normalization or set it to 0.
                     self.test[:, dim] = 0
 
 
@@ -805,12 +801,7 @@ class WADISegLoader(Dataset):
                 if X_max - X_min != 0:  # Avoid division by zero
                     self.val[:, dim] = (self.val[:, dim] - X_min) / (X_max - X_min)
                 else:
-                    #print(f"Warning: Dimension {dim} has constant values. Skipping normalization.")
-                    # If X_max == X_min, then the entire column has the same value. You may skip normalization or set it to 0.
                     self.val[:, dim] = 0
-        
-        print("test:", self.test.shape)
-        print("train:", self.train.shape)
         
     def __len__(self):
 
@@ -918,18 +909,19 @@ class WADI_F_SegLoader(Dataset):
         self.inverse = inverse
         self.timeenc = timeenc
         self.freq = freq
-
-        #self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
-        #self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
-        #self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
-        
-        self.train = np.load(os.path.join(self.root_path, "WADI_train.npy"))
-        self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
-        self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+        if root_path == "./dataset/anomaly_detection/WADI/WADI2019_power_transformed":
+            self.train = np.load(os.path.join(self.root_path, "WADI_train_transformed.npy"))
+            self.test = np.load(os.path.join(self.root_path, "WADI_test_transformed.npy"))
+            self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
+        else:
+            self.scale = True
+            self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
+            self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
+            self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
 
         data_len = len(self.train)
         self.val = self.train[int(data_len * 0.8):]
-        self.scaler = PowerTransformer(method='yeo-johnson')  # Use MinMaxScaler with feature_range set to (-1, 1)
+        self.scaler = PowerTransformer(method='yeo-johnson')
 
         self.__read_data__()
 
@@ -955,7 +947,6 @@ class WADI_F_SegLoader(Dataset):
         data_stamp = time_features(timestamps, freq=self.freq)
         data_stamp = data_stamp.transpose(1, 0)
         self.data_stamp = data_stamp
-        #print (" self.data_stamp:",self.data_stamp.shape)
 
     def __getitem__(self, index):
         
@@ -988,10 +979,3 @@ class WADI_F_SegLoader(Dataset):
         else:
             return len(self.data_x) - self.seq_len - self.pred_len + 1
     
-        #self.train = np.load(os.path.join(self.root_path, "WADI_train.npy"))
-        #self.test = np.load(os.path.join(self.root_path, "WADI_test.npy"))
-        #self.test_labels = np.load(os.path.join(self.root_path, "WADI_test_label.npy"))
-
-        #self.train = np.load(os.path.join(self.root_path, "mini_wadi_normal_2019_no_scaler.npy"))
-        #self.test = np.load(os.path.join(self.root_path, "mini_wadi_attack_2019_no_scaler.npy"))
-        #self.test_labels = np.load(os.path.join(self.root_path, "mini_labels.npy"))
