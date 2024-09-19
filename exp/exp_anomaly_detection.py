@@ -1,6 +1,6 @@
-from data_provider.data_factory import data_provider
+from data_provider.data_factory import data_provider, get_events
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, adjustment, get_events, get_composite_fscore_raw
+from utils.tools import EarlyStopping, adjust_learning_rate, adjustment, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores 
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
@@ -17,7 +17,6 @@ from datetime import datetime
 import csv
 
 warnings.filterwarnings('ignore')
-
 
 class Exp_Anomaly_Detection(Exp_Basic):
     def __init__(self, args):
@@ -42,6 +41,10 @@ class Exp_Anomaly_Detection(Exp_Basic):
         criterion = nn.MSELoss()
         return criterion
 
+    def get_events(self, y_test):
+        events = get_events(y_test)
+        return events
+    
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
@@ -69,13 +72,9 @@ class Exp_Anomaly_Detection(Exp_Basic):
         
         now = datetime.now()
         date_time_str = now.strftime("%Y-%m-%d_%H-%M")
-    
-        folder_path = './test_results/HTTP_benchmarkv3/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
+            
         metrics = {'epoch': [],'iters': [], 'loss': []}
 
-        
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
@@ -142,24 +141,23 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
-        torch.save(metrics, folder_path+"metrics"+"_"+date_time_str+".pth")
-
-        return self.model, train_loss, vali_loss, test_loss, train_duration
-    
-    def test(self, setting,train_loss, vali_loss, test_loss,model,seq_len ,d_model,e_layers,d_ff,n_heads,train_epochs,loss,learning_rate,anomaly_ratio,embed,train_duration, test=0):
+        
+        return self.model, train_loss, vali_loss, train_duration
+    def test(self, setting,train_loss, vali_loss, train_duration, test=0):
         test_data, test_loader = self._get_data(flag='test')
         train_data, train_loader = self._get_data(flag='train')
+        
+        avg_train_loss = np.mean(train_loss)
+        avg_vali_loss = np.mean(vali_loss)
+        
+        test_results_path = os.path.join('./test_results/', setting)
         
         test_start_time = time.time()
         if test:
             print('loading model')
             self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
-
+        
         attens_energy = []
-        folder_path = './test_results/HTTP_benchmarkv3/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-
         self.model.eval()
         self.anomaly_criterion = nn.MSELoss(reduce=False)
 
@@ -169,9 +167,10 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 batch_x = batch_x.float().to(self.device)
                 # reconstruction
                 outputs = self.model(batch_x, None, None, None)
+                #print(f"batch_x.shape:{batch_x.shape}")
                 # criterion
-                #print(f"outputs.shape:{outputs.shape}")
                 score = torch.mean(self.anomaly_criterion(batch_x, outputs), dim=-1)
+                #print(f"score.shape:{score.shape}")
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
 
@@ -193,90 +192,124 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
         attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
         test_energy = np.array(attens_energy)
-        print("train_energy:",len(train_energy))
+        
         combined_energy = np.concatenate([train_energy, test_energy], axis=0)
-        threshold = np.percentile(combined_energy, 100 - self.args.anomaly_ratio)
-        print("Threshold :", threshold)
-
-        # (3) evaluation on the test set
-        pred = (test_energy > threshold).astype(int)
+        
         test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
         test_labels = np.array(test_labels)
         gt = test_labels.astype(int)
-
-        print("pred:   ", pred.shape)
-        print("gt:     ", gt.shape)
 
         test_end_time = time.time()
         test_duration = test_end_time - test_start_time
         total_time = train_duration + test_duration
         
-        pred = np.array(pred)
         gt = np.array(gt)
-
-        # Ensure pred and gt have the same shape
-        if pred.shape != gt.shape:
-            raise ValueError("Shape mismatch: pred and gt must have the same shape.")
-
-        print("pred: ", pred.shape)
-        print("gt:   ", gt.shape)
-
-        # General Accuracy and Confusion Matrix
-        accuracy = accuracy_score(gt, pred)
-        cm = confusion_matrix(gt, pred)
-
-        # Normalize the confusion matrix by sequence length
-        cm_normalized = np.floor(cm / seq_len)
-
-        precision, recall, f_score, support = precision_recall_fscore_support(gt, pred, average='binary')
-
-        print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(accuracy, precision, recall, f_score))
-
-        # Compute the confusion matrix
-        print("Confusion Matrix (Normalized):")
-        print(cm_normalized)
+        #get true events from dataset
+        true_events=self.get_events(gt)
+        avg_test_loss = np.mean(test_energy)
         
-        # Point-adjusted F-1
-        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred)
-        accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
-        precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, support_point_adjusted = precision_recall_fscore_support(labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
-        cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
+        #get dynamic kernel scores
+        score_t_test_dyn, _, score_t_train_dyn, _ = get_dynamic_scores(None, None, train_energy,test_energy, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
+        #get dynamic scores
+        score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(test_energy,None,self.args.kernel_sigma)
 
-        print("Accuracy_point_adjusted : {:0.4f}, Precision_point_adjusted : {:0.4f}, Recall_point_adjusted : {:0.4f}, F-score_point_adjusted : {:0.4f}".format(accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
-        print("Confusion Matrix (Point-adjusted):")
-        print(cm_point_adjusted)
-
-        # Composite F1
-        true_events = get_events(gt)
-        prec_t, rec_e, fscore_c = get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
-        print("Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(prec_t, rec_e, fscore_c))
+        metrics = {}
+        metrics_best_f1 = {}
+        metrics_top_k = {}
+        metrics_top_tail_prob = {}
         
-        # Get the current date and time
-        now = datetime.now()
-        date_time_str = now.strftime("%Y-%m-%d_%H-%M")
+        dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
+
+        #best F1 --------------
+        #default
+        default_thres_best_f1, default_pred_labels_best_f1, default_avg_prec_best_f1, default_auroc_best_f1 = threshold_and_predict(test_energy,gt,true_events=true_events,logger=None,thres_method="best_f1_test",return_auc=True)
+
+        #dynamic
+        dyn_opt_thres_best_f1, dyn_pred_labels_best_f1, dyn_avg_prec_best_f1, dyn_auroc_best_f1 = threshold_and_predict(score_t_test_dyn,gt,true_events=true_events,logger=None,thres_method="best_f1_test",return_auc=True,)
         
-        parameters_header = ["Model", "Train loss", "Vali loss", "Test loss", "Seq len", "Dim Model", "Enc-layers", "Dim-ff", "n_heads", "Train epochs", "Learning rate", "Anomaly ratio", "embed", "Total Duration (s)", "Train Duration (s)", "Test Duration (s)","Test Duration (min)"]
-        parameters = [model, f"{train_loss:.6f}", f"{vali_loss:.6f}", f"{test_loss:.6f}", seq_len, d_model, e_layers, d_ff, n_heads, train_epochs, learning_rate, anomaly_ratio, embed,f"{total_time:.2f}", f"{train_duration:.2f}", f"{test_duration:.2f}",f"{(total_time/60):.2f}"]
+        #dynamic gauss
+        dyn_gauss_opt_thres_best_f1, dyn_gauss_pred_labels_best_f1, dyn_gauss_avg_prec_best_f1, dyn_gauss_auroc_best_f1 = threshold_and_predict(score_t_dyn_gauss_conv,gt,true_events=true_events,logger=None,thres_method="best_f1_test",return_auc=True,)
+        
+        # Call the helper function to evaluate metrics
+        default_metrics_best_f1 = evaluate_metrics(gt, default_pred_labels_best_f1, default_auroc_best_f1, seq_len=self.args.seq_len)
+        dyn_metrics_best_f1 = evaluate_metrics(gt, dyn_pred_labels_best_f1, dyn_auroc_best_f1, seq_len=self.args.seq_len)
+        dyn_gauss_metrics_best_f1 = evaluate_metrics(gt, dyn_gauss_pred_labels_best_f1, dyn_gauss_auroc_best_f1, seq_len=self.args.seq_len)
+    
+        metrics_best_f1["default_metrics_best_f1"] = default_metrics_best_f1
+        metrics_best_f1["dyn_metrics_best_f1"] = dyn_metrics_best_f1
+        metrics_best_f1["dyn_gauss_metrics_best_f1"]= dyn_gauss_metrics_best_f1
+        metrics["metrics_best_f1"] = metrics_best_f1
 
-        metrics_header = ["Model","F-Metric","Accuracy", "Precison","Recall","F-1_x", "CM"]
-        metrics_f1 = [model,"Default F1", f"{accuracy:.4f}", f"{precision:.4f}", f"{recall:.4f}", f"{f_score:.4f}", f"{cm}"]
-        metrics_fpa = [model, "Fpa", f"{accuracy_point_adjusted:.4f}", f"{precision_point_adjusted:.4f}", f"{recall_point_adjusted:.4f}", f"{f_score_point_adjusted:.4f}", f"{cm_point_adjusted}"]
-        metrics_fc = [model, "Fc", f"{accuracy_point_adjusted:.4f}", f"{prec_t:.4f}", f"{rec_e:.4f}", f"{fscore_c:.4f}", f"-"]
+        #top_k -----------------
+        #default
+        default_thres_top_k_time, default_pred_labels_top_k_time, default_avg_prec_top_k_time, default_auroc_top_k_time = threshold_and_predict(test_energy,gt,true_events=true_events,logger=None,thres_method="top_k_time",return_auc=True,score_t_test_and_train=combined_energy)
+        #dynamic
+        dyn_opt_thres_top_k_time, dyn_pred_labels_top_k, dyn_avg_prec_top_k, dyn_auroc_top_k = threshold_and_predict(score_t_test_dyn,gt,true_events=true_events,logger=None,thres_method="top_k_time",return_auc=True,score_t_test_and_train=dyn_scores_combined)
+        #dynamic gauss
+        dyn_gauss_opt_thres_top_k, dyn_gauss_pred_labels_top_k, dyn_gauss_avg_prec_top_k, dyn_gauss_auroc_top_k= threshold_and_predict(score_t_dyn_gauss_conv,gt,true_events=true_events,logger=None,thres_method="top_k_time",return_auc=True)
 
-        file_path = os.path.join(folder_path, "results_")
-        file_exists = os.path.isfile(file_path)
-                      
-        with open(file_path + "parameters"+ ".csv", 'a', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(parameters_header)
-            writer.writerow(parameters)
-            
-        with open(file_path + "metrics" + ".csv", 'a', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(metrics_header)
-            writer.writerow(metrics_f1)
-            writer.writerow(metrics_fpa)
-            writer.writerow(metrics_fc)
-            
+        # Call the helper function to evaluate metrics
+        default_metrics_top_k = evaluate_metrics(gt, default_pred_labels_top_k_time, default_auroc_top_k_time, seq_len=self.args.seq_len)
+        dyn_metrics_top_k = evaluate_metrics(gt, dyn_pred_labels_top_k, dyn_auroc_top_k, seq_len=self.args.seq_len)
+        dyn_gauss_metrics_top_k = evaluate_metrics(gt, dyn_gauss_pred_labels_top_k, dyn_gauss_auroc_top_k, seq_len=self.args.seq_len)
+
+        metrics_top_k["default_metrics_top_k"] = default_metrics_top_k
+        metrics_top_k["dyn_metrics_top_k"] = dyn_metrics_top_k
+        metrics_top_k["dyn_gauss_metrics_top_k"]= dyn_gauss_metrics_top_k
+        metrics["metrics_top_k"] = metrics_top_k
+
+        #tail_prob ----------------
+        #default
+        default_thres_tail_prob, default_pred_labels_tail_prob, default_avg_prec_tail_prob, default_auroc_tail_prob = threshold_and_predict(test_energy,gt,true_events=true_events,logger=None,thres_method="tail_prob",return_auc=True,score_t_test_and_train=combined_energy)
+        #dynamic
+        dyn_gauss_opt_thres_tail_prob, dyn_gauss_pred_labels_tail_prob, dyn_gauss_avg_prec_tail_prob, dyn_gauss_auroc_tail_prob = threshold_and_predict(score_t_dyn_gauss_conv,gt,true_events=true_events,logger=None,thres_method="tail_prob",return_auc=True,)
+        #dynamic gauss
+        dyn_opt_thres_tail_prob, dyn_pred_labels_tail_prob, dyn_avg_prec_tail_prob, dyn_auroc_tail_prob = threshold_and_predict(score_t_test_dyn,gt,true_events=true_events,logger=None,thres_method="tail_prob",return_auc=True,)
+        
+        # Call the helper function to evaluate metrics
+        default_metrics_tail_prob = evaluate_metrics(gt, default_pred_labels_tail_prob, default_auroc_tail_prob, seq_len=self.args.seq_len)
+        dyn_metrics_tail_prob = evaluate_metrics(gt, dyn_pred_labels_tail_prob, dyn_auroc_tail_prob, seq_len=self.args.seq_len)
+        dyn_gauss_metrics_tail_prob = evaluate_metrics(gt, dyn_gauss_pred_labels_tail_prob, dyn_gauss_auroc_tail_prob, seq_len=self.args.seq_len)
+        
+        metrics_top_tail_prob["default_metrics_tail_prob"] = default_metrics_tail_prob
+        metrics_top_tail_prob["dyn_metrics_tail_prob"] = dyn_metrics_tail_prob
+        metrics_top_tail_prob["dyn_gauss_metrics_tail_prob"]= dyn_gauss_metrics_tail_prob
+        metrics["metrics_top_tail_prob"] = metrics_top_tail_prob
+
+        if not os.path.exists(test_results_path):
+            os.makedirs(test_results_path)
+        export_memory_usage = False
+        write_to_csv(
+            model_name=self.args.model,
+            model_id=self.args.model_id,
+            avg_train_loss=train_loss,
+            avg_vali_loss=avg_vali_loss,
+            avg_test_loss=avg_test_loss,
+            seq_len=self.args.seq_len,
+            d_model=self.args.d_model,
+            enc_in=self.args.enc_in,
+            e_layers=self.args.e_layers,
+            dec_in=self.args.dec_in,
+            d_layers=self.args.d_layers,
+            c_out=self.args.c_out,
+            d_ff=self.args.d_ff,
+            n_heads=self.args.n_heads,
+            long_window=self.args.d_score_long_window, 
+            short_window=self.args.d_score_short_window,
+            kernel_sigma=self.args.kernel_sigma,
+            train_epochs=self.args.train_epochs,
+            learning_rate=self.args.learning_rate,
+            anomaly_ratio=self.args.anomaly_ratio,
+            embed=self.args.embed,
+            total_time=total_time,
+            train_duration=train_duration,
+            test_duration=test_duration,
+            metrics=metrics,
+            test_results_path=test_results_path,
+            setting=setting,
+            export_memory_usage=export_memory_usage
+        )
+
+        return
+        
+        

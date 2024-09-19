@@ -1,16 +1,27 @@
 import os
-
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 import math
-from sklearn.metrics import precision_score
 from scipy import signal
 from scipy.stats import norm
-
+from datetime import datetime
+import csv
+from sklearn.metrics import (
+    precision_recall_curve,
+    roc_curve,
+    auc,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+    accuracy_score,
+    fbeta_score,
+    average_precision_score,
+    confusion_matrix,
+    precision_recall_fscore_support
+)
 plt.switch_backend('agg')
-
 
 def adjust_learning_rate(optimizer, epoch, args):
     # lr = args.learning_rate * (0.2 ** (epoch // 2))
@@ -141,17 +152,39 @@ def get_events(y_test, outlier=1, normal=0):
         events[event] = (event_start, event_end)
     return events
 
+def get_negative_intervals(true_events, total_length):
+    negative_intervals = []
+    prev_end = -1
+    sorted_events = sorted(true_events.values())
+
+    for start, end in sorted_events:
+        if prev_end + 1 < start:
+            # There is a gap between the previous event and the current event
+            negative_intervals.append((prev_end + 1, start - 1))
+        prev_end = end
+
+    # Check for a negative interval after the last event
+    if prev_end + 1 < total_length:
+        negative_intervals.append((prev_end + 1, total_length - 1))
+
+    return negative_intervals
 
 def get_composite_fscore_raw(pred_labels, true_events, y_test, return_prec_rec=False):
     tp = np.sum([pred_labels[start:end + 1].any() for start, end in true_events.values()])
+    total_length = len(y_test)
+    # Get Negative Intervals
+    negative_intervals = get_negative_intervals(true_events, total_length)
+    tn = np.sum([not pred_labels[start:end + 1].any() for start, end in negative_intervals])
+    fp = np.sum([pred_labels[start:end + 1].any() for start, end in negative_intervals])
     fn = len(true_events) - tp
+    acc_c = (tp+tn)/(tp+tn+fn+fp)
     rec_e = tp/(tp + fn)
     prec_t = precision_score(y_test, pred_labels)
     fscore_c = 2 * rec_e * prec_t / (rec_e + prec_t)
     if prec_t == 0 and rec_e == 0:
         fscore_c = 0
     if return_prec_rec:
-        return prec_t, rec_e, fscore_c
+        return prec_t, rec_e, fscore_c, acc_c
     return fscore_c
 
 def get_dynamic_scores(error_tc_train, error_tc_test, error_t_train, error_t_test, long_window=2000, short_window=10):
@@ -238,18 +271,6 @@ def get_gaussian_kernel_scores(score_t_dyn, score_tc_dyn, kernel_sigma):
 
     return score_t_dyn_gauss_conv, score_tc_dyn_gauss_conv
 
-from sklearn.metrics import (
-    precision_recall_curve,
-    roc_curve,
-    auc,
-    roc_auc_score,
-    precision_score,
-    recall_score,
-    accuracy_score,
-    fbeta_score,
-    average_precision_score,
-)
-
 default_thres_config = {
     "top_k_time": {},
     "best_f1_test": {"exact_pt_adj": True},
@@ -329,19 +350,26 @@ def threshold_and_predict(
     y_test,
     true_events,
     logger,
-    test_anom_frac,
+    test_anom_frac=0.01,
     thres_method="top_k_time",
     point_adjust=False,
     score_t_train=None,
     thres_config_dict=dict(),
     return_auc=False,
     composite_best_f1=False,
+    score_t_test_and_train=None,
 ):
     if thres_method in thres_config_dict.keys():
         config = thres_config_dict[thres_method]
     else:
         config = default_thres_config[thres_method]
-    # test_anom_frac = (np.sum(y_test)) / len(y_test)
+        
+    if score_t_test_and_train is not None:
+        test_anom_frac = (np.sum(y_test)) / len(score_t_test_and_train)
+    else:
+        test_anom_frac = (np.sum(y_test)) / len(y_test)
+        
+    print("test_anom_frac:",test_anom_frac)
     auroc = None
     avg_prec = None
     if thres_method == "thresholded_score":
@@ -388,9 +416,15 @@ def threshold_and_predict(
         pred_labels = score_t_test > opt_thres
 
     elif thres_method == "top_k_time":
-        opt_thres = np.nanpercentile(
-            score_t_test, 100 * (1 - test_anom_frac), interpolation="higher"
-        )
+        if score_t_test_and_train is not None:
+            print("using score_t_test_and_train")
+            opt_thres = np.nanpercentile(
+                score_t_test_and_train, 100 * (1 - test_anom_frac), interpolation="higher"
+            )
+        else:
+            opt_thres = np.nanpercentile(
+                score_t_test, 100 * (1 - test_anom_frac), interpolation="higher"
+            )
         pred_labels = np.where(score_t_test > opt_thres, 1, 0)
 
     elif thres_method == "best_f1_test":
@@ -422,3 +456,217 @@ def threshold_and_predict(
         auroc = roc_auc_score(y_test, score_t_test)
         return opt_thres, pred_labels, avg_prec, auroc
     return opt_thres, pred_labels
+
+def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
+    """
+    Evaluate various metrics given ground truth labels and predictions.
+
+    Parameters:
+    - gt: array-like of shape (n_samples,), Ground truth labels.
+    - pred: array-like of shape (n_samples,), Predicted labels.
+    - export_memory_usage: bool, default False. If True, exports memory usage statistics to 'Memory.csv'.
+    - seq_len: int, default 1. Sequence length for normalizing confusion matrix.
+
+    Returns:
+    - metrics: dict, containing computed metrics.
+    """
+    # General Accuracy and Confusion Matrix
+    accuracy = accuracy_score(gt, pred)
+    cm = confusion_matrix(gt, pred)
+
+    # Avoid division by zero in case seq_len is zero
+    if seq_len == 0:
+        print("Warning: seq_len is zero. Normalized confusion matrix cannot be computed.")
+        cm_normalized = cm
+    else:
+        cm_normalized = np.floor(cm / seq_len)
+
+    precision, recall, f_score, _ = precision_recall_fscore_support(gt, pred, average='binary')
+
+    print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(
+        accuracy, precision, recall, f_score))
+    print("Confusion Matrix (Normalized):")
+    print(cm_normalized)
+
+    # Point-adjusted F1 Score
+    try:
+        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred)
+        accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
+        precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, _ = precision_recall_fscore_support(
+            labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
+        cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
+
+        print("Adjusted Metrics:")
+        print("Accuracy: {:0.4f}, Precision: {:0.4f}, Recall: {:0.4f}, F-score: {:0.4f}".format(
+            accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
+        print("Confusion Matrix (Point-adjusted):")
+        print(cm_point_adjusted)
+    except NameError:
+        print("Error: 'adjustment' function is not defined. Skipping point-adjusted metrics.")
+        accuracy_point_adjusted = precision_point_adjusted = recall_point_adjusted = f_score_point_adjusted = None
+        cm_point_adjusted = None
+
+    # Composite F1 Score
+    try:
+        true_events = get_events(gt)
+        prec_t, rec_e, fscore_c, acc_c= get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
+        print("Composite F1 Score:")
+        print("Acc_c: {:0.4f},Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(acc_c, prec_t, rec_e, fscore_c))
+    except NameError:
+        print("Error: 'get_events' or 'get_composite_fscore_raw' function is not defined. Skipping composite F1 score.")
+        prec_t = rec_e = fscore_c = None
+
+    # Optionally, export memory usage
+    if export_memory_usage:
+        try:
+            # Collect memory stats here
+            memory_stats = get_memory_stats()  # You need to define get_memory_stats()
+            # Write to file
+            with open("Memory.csv", 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(memory_stats)
+        except NameError:
+            print("Error: 'get_memory_stats' function is not defined. Cannot export memory usage.")
+
+    # Prepare metrics dictionary
+    metrics = {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f_score': f_score,
+        'confusion_matrix': cm,
+        'cm_normalized': cm_normalized,
+        'accuracy_point_adjusted': accuracy_point_adjusted,
+        'precision_point_adjusted': precision_point_adjusted,
+        'recall_point_adjusted': recall_point_adjusted,
+        'f_score_point_adjusted': f_score_point_adjusted,
+        'cm_point_adjusted': cm_point_adjusted,
+        'acc_c': acc_c,
+        'prec_t': prec_t,
+        'rec_e': rec_e,
+        'fscore_c': fscore_c,
+        'auroc':auroc,
+    }
+
+    return metrics
+
+def write_to_csv(
+    model_name, model_id,avg_train_loss, avg_vali_loss, avg_test_loss, seq_len, d_model,enc_in, e_layers,dec_in,d_layers,c_out,
+    d_ff, n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, anomaly_ratio, embed, total_time, train_duration,
+    test_duration, metrics, test_results_path, setting, export_memory_usage=False, memory_stats=None
+):
+    """
+    Writes parameters and metrics to CSV files.
+
+    Parameters:
+    - model_name (str): Name of the model.
+    - avg_train_loss (float): Average training loss.
+    - avg_vali_loss (float): Average validation loss.
+    - avg_test_loss (float): Average test loss.
+    - seq_len (int): Sequence length.
+    - d_model (int): Model dimension.
+    - e_layers (int): Number of encoder layers.
+    - d_ff (int): Dimension of feedforward network.
+    - n_heads (int): Number of attention heads.
+    - train_epochs (int): Number of training epochs.
+    - learning_rate (float): Learning rate.
+    - anomaly_ratio (float): Anomaly ratio.
+    - embed (str): Embedding type.
+    - total_time (float): Total duration in seconds.
+    - train_duration (float): Training duration in seconds.
+    - test_duration (float): Testing duration in seconds.
+    - metrics (dict or list): Dictionary or list containing evaluation metrics.
+    - test_results_path (str): Path to save test results.
+    - setting (str): Current setting or configuration name.
+    - export_memory_usage (bool, optional): If True, writes memory stats to 'Memory.csv'. Defaults to False.
+    - memory_stats (list, optional): Memory statistics to write. Required if export_memory_usage is True.
+
+    Returns:
+    - None
+    """
+
+    # Parameters header and data
+    parameters_header = [
+        "Model", "avg_train_loss", "avg_vali_loss", "avg_test_loss", "seq_len", "d_model", "enc_in","e_layers", "dec_in", "d_layers", "c_out","d_ff","n_heads","long_window","short_window","kernel_sigma","train_epochs","learning_rate","anomaly_ratio", "embed", "Total Duration (min)", "Train Duration (min)", "Test Duration (min)"]
+    parameters = [
+        model_name, f"{avg_train_loss:.6f}", f"{avg_vali_loss:.6f}", f"{avg_test_loss:.6f}", seq_len, d_model, enc_in,e_layers, dec_in,d_layers,c_out,d_ff,n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, anomaly_ratio, embed, f"{(total_time / 60):.2f}",f"{(train_duration/60):.2f}", f"{(test_duration/60):.2f}"]
+
+    # Ensure the test results path exists
+    #test_results_dir = os.path.join(test_results_path, setting)
+    #os.makedirs(test_results_dir, exist_ok=True)
+
+    file_prefix = os.path.join(test_results_path, "results_"+ model_id )
+    parameters_file = file_prefix + "_parameters.csv"
+    metrics_file = file_prefix + "_metrics.csv"
+
+    # Write parameters to CSV
+    file_exists = os.path.isfile(parameters_file)
+    with open(parameters_file, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(parameters_header)
+        writer.writerow(parameters)
+
+    # Metrics header
+    metrics_header = ["Model", "Metric Type", "Accuracy", "Precision", "Recall", "F-1", "AUROC", "Confusion Matrix"]
+
+    # Function to write metrics to CSV
+    def write_metrics(writer, model_name, metrics_dict):
+        
+        # Default F1 metrics
+        metrics_f1 = [
+            model_name, "Default F1", f"{metrics_dict.get('accuracy', 'N/A'):.4f}",
+            f"{metrics_dict.get('precision', 'N/A'):.4f}", f"{metrics_dict.get('recall', 'N/A'):.4f}",
+            f"{metrics_dict.get('f_score', 'N/A'):.4f}" ,f"{metrics_dict.get('auroc', 'N/A'):.4f}", f"{metrics_dict.get('confusion_matrix', 'N/A')}"
+        ]
+        writer.writerow(metrics_f1)
+
+        # Point-adjusted metrics
+        if metrics_dict.get('accuracy_point_adjusted') is not None:
+            metrics_fpa = [
+                model_name, "Fpa", f"{metrics_dict['accuracy_point_adjusted']:.4f}",
+                f"{metrics_dict['precision_point_adjusted']:.4f}", f"{metrics_dict['recall_point_adjusted']:.4f}",
+                f"{metrics_dict['f_score_point_adjusted']:.4f}",f"{metrics_dict.get('auroc', 'N/A'):.4f}", f"{metrics_dict['cm_point_adjusted']}"
+            ]
+        else:
+            metrics_fpa = [model_name, "Fpa", "N/A", "N/A", "N/A", "N/A", "N/A"]
+        writer.writerow(metrics_fpa)
+
+        # Composite F1 metrics
+        if metrics_dict.get('fscore_c') is not None:
+            metrics_fc = [
+                model_name, "Fc", f"{metrics_dict['acc_c']:.4f}", f"{metrics_dict['prec_t']:.4f}", f"{metrics_dict['rec_e']:.4f}", f"{metrics_dict['fscore_c']:.4f}",f"{metrics_dict.get('auroc', 'N/A'):.4f}", "-"
+            ]
+        else:
+            metrics_fc = [model_name, "Fc", "N/A", "N/A", "N/A", "N/A", "-"]
+        writer.writerow(metrics_fc)
+
+    # Write metrics to CSV
+    with open(metrics_file, 'a', newline='') as f:
+        writer = csv.writer(f)
+        # Check if file exists to write header
+        file_exists = os.path.isfile(metrics_file)
+        if not file_exists:
+            writer.writerow(metrics_header)
+        
+        elif isinstance(metrics, dict) and len(metrics) == 3:
+            
+            writer.writerow(metrics_header)
+            for key, metric in metrics.items():
+            # Write the first metrics dict
+                writer.writerow([])
+                writer.writerow([key])
+                for key, scoring in metric.items():
+                    writer.writerow([])
+                    writer.writerow([key])
+                    write_metrics(writer, model_name + "_" + key, scoring)
+
+        else:
+            # Handle unexpected metrics format
+            raise ValueError("The 'metrics' parameter should be a dict or a list containing two dicts.")
+
+    # Optionally, write memory stats
+    if export_memory_usage and memory_stats is not None:
+        with open("Memory.csv", 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(memory_stats)
