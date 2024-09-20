@@ -209,13 +209,13 @@ class Exp_Anomaly_Detection(Exp_Basic):
         #get dynamic kernel scores
         score_t_test_dyn, _, score_t_train_dyn, _ = get_dynamic_scores(None, None, train_energy,test_energy, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
         #get dynamic scores
-        score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(test_energy,None,self.args.kernel_sigma)
+        score_t_test_dyn_gauss_conv, _ = get_gaussian_kernel_scores(test_energy,None,self.args.kernel_sigma)
         
-        combined_score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(combined_energy,None,self.args.kernel_sigma)
+        score_t_train_dyn_gauss_conv, _ = get_gaussian_kernel_scores(train_energy,None,self.args.kernel_sigma)
 
-        dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
-
-        metrics = compute_metrics(test_energy, gt, true_events,score_t_test_dyn, score_t_dyn_gauss_conv, self.args.seq_len , score_t_train_dyn, combined_energy, combined_score_t_dyn_gauss_conv)
+        #dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
+        #metrics = compute_metrics(test_scores, gt, true_events,score_t_test_dyn, score_t_dyn_gauss_conv, self.args.seq_len , train_scores, score_t_train_dyn, train_score_t_dyn_gauss_conv)
+        metrics = compute_metrics(test_energy, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_energy, score_t_train_dyn, score_t_train_dyn_gauss_conv)
 
         if not os.path.exists(test_results_path):
             os.makedirs(test_results_path)

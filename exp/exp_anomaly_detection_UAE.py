@@ -342,7 +342,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         print("avg_train_energy:",avg_train_energy.shape)
         print("avg_test_energy:",avg_test_energy.shape)
         
-        combined_energy = np.concatenate([avg_train_energy, avg_test_energy], axis=0)
+        #combined_energy = np.concatenate([avg_train_energy, avg_test_energy], axis=0)
 
         test_labels = self.test_labels
         test_labels = np.array(test_labels)
@@ -351,14 +351,15 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         #get dynamic kernel scores
         score_t_test_dyn, _, score_t_train_dyn, _ = get_dynamic_scores(None, None, avg_train_energy,avg_test_energy, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
         #get dynamic scores
-        score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(avg_test_energy,None,self.args.kernel_sigma)
+        score_t_test_dyn_gauss_conv, _ = get_gaussian_kernel_scores(avg_test_energy,None,self.args.kernel_sigma)
 
-        combined_score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(combined_energy,None,self.args.kernel_sigma)
+        score_t_train_dyn_gauss_conv, _ = get_gaussian_kernel_scores(avg_train_energy,None,self.args.kernel_sigma)
 
-        dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
+        #dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
 
-        metrics = compute_metrics(avg_test_energy, gt, true_events,score_t_test_dyn, score_t_dyn_gauss_conv, self.args.seq_len , score_t_train_dyn, combined_energy, combined_score_t_dyn_gauss_conv)
-
+        metrics = compute_metrics(avg_test_energy, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , avg_train_energy, score_t_train_dyn, score_t_train_dyn_gauss_conv)
+        #metrics = compute_metrics(test_scores, gt, true_events,score_t_test_dyn, score_t_dyn_gauss_conv, self.args.seq_len , train_scores, score_t_train_dyn, train_score_t_dyn_gauss_conv)
+        
         avg_test_loss = np.mean(test_losses)
         avg_train_loss = np.mean(train_losses)
         avg_vali_loss = np.mean(vali_losses)

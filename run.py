@@ -204,13 +204,13 @@ if __name__ == '__main__':
             if args.task_name == 'anomaly_detection' or args.task_name == 'anomaly_detection_uae':
                 _, train_loss, val_loss, train_duration = exp.train(setting)
             elif args.task_name == 'long_term_forecast' or args.task_name == 'enc_dec_anomaly':
-                _, train_loss, val_loss, train_duration = exp.train(setting)
+                _, train_loss, val_loss, train_duration , train_energy= exp.train(setting)
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             if args.task_name == 'anomaly_detection' or args.task_name == 'anomaly_detection_uae':
                 exp.test(setting,train_loss, val_loss, train_duration)
             elif args.task_name == 'long_term_forecast' or args.task_name == 'enc_dec_anomaly':
-                exp.test(setting,train_loss, val_loss, train_duration)
+                exp.test(setting,train_loss, val_loss, train_duration,train_energy)
                 
             torch.cuda.empty_cache()
     else:
