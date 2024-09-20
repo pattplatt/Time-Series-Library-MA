@@ -41,7 +41,7 @@ class Model(nn.Module):
             self.projection = nn.Linear(configs.d_model, configs.pred_len, bias=True)
         if self.task_name == 'imputation':
             self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
         if self.task_name == 'classification':
             self.act = F.gelu
@@ -124,7 +124,7 @@ class Model(nn.Module):
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
             return dec_out  # [B, L, D]
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             dec_out = self.anomaly_detection(x_enc)
             return dec_out  # [B, L, D]
         if self.task_name == 'classification':

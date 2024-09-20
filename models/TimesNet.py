@@ -91,7 +91,7 @@ class Model(nn.Module):
                 self.seq_len, self.pred_len + self.seq_len)
             self.projection = nn.Linear(
                 configs.d_model, configs.c_out, bias=True)
-        if self.task_name == 'imputation' or self.task_name == 'anomaly_detection':
+        if self.task_name == 'imputation' or self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             self.projection = nn.Linear(
                 configs.d_model, configs.c_out, bias=True)
         if self.task_name == 'classification':
@@ -206,7 +206,7 @@ class Model(nn.Module):
             dec_out = self.imputation(
                 x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
             return dec_out  # [B, L, D]
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             dec_out = self.anomaly_detection(x_enc)
             return dec_out  # [B, L, D]
         if self.task_name == 'classification':

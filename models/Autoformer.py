@@ -50,7 +50,7 @@ class Model(nn.Module):
         # Decoder
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast' or self.task_name =='enc_dec_anomaly':
             self.dec_embedding = DataEmbedding_wo_pos(configs.dec_in, configs.d_model, configs.embed, configs.freq,
-                                                      configs.dropout)
+                          configs.dropout)
             self.decoder = Decoder(
                 [
                     DecoderLayer(
@@ -78,8 +78,8 @@ class Model(nn.Module):
             self.projection = nn.Linear(
                 configs.d_model, configs.c_out, bias=True)
         if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
-            self.projection = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
-            self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
+            self.projection = nn.Linear(configs.d_model, configs.c_out, bias=True)
+            #self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
         if self.task_name == 'classification':
             self.act = F.gelu
             self.dropout = nn.Dropout(configs.dropout)
@@ -130,8 +130,8 @@ class Model(nn.Module):
         #print(f"enc_out.shape:{enc_out.shape}")
         # final
         dec_out = self.projection(enc_out)
-        dec_out = torch.relu(dec_out)
-        dec_out = self.projection_2(dec_out)     
+        #dec_out = torch.relu(dec_out)
+        #dec_out = self.projection_2(dec_out)     
         #print(f"dec_out.shape:{dec_out.shape}")
         return dec_out
 

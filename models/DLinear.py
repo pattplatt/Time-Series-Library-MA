@@ -16,7 +16,7 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.task_name = configs.task_name
         self.seq_len = configs.seq_len
-        if self.task_name == 'classification' or self.task_name == 'anomaly_detection' or self.task_name == 'imputation':
+        if self.task_name == 'classification' or self.task_name == 'anomaly_detection' or self.task_name == 'imputation' or self.task_name == 'anomaly_detection_uae':
             self.pred_len = configs.seq_len
         else:
             self.pred_len = configs.pred_len
@@ -103,7 +103,7 @@ class Model(nn.Module):
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc)
             return dec_out  # [B, L, D]
-        if self.task_name == 'anomaly_detection':
+        if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             dec_out = self.anomaly_detection(x_enc)
             return dec_out  # [B, L, D]
         if self.task_name == 'classification':
