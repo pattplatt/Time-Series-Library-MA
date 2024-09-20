@@ -1,6 +1,6 @@
-from data_provider.data_factory import data_provider
+from data_provider.data_factory import data_provider, get_events
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, visual, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict
+from utils.tools import EarlyStopping, adjust_learning_rate, visual, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics
 from utils.metrics import metric
 import torch
 import torch.nn as nn
@@ -38,6 +38,10 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
     def _select_criterion(self):
         criterion = nn.MSELoss()
         return criterion
+    
+    def get_events(self, y_test):
+        events = get_events(y_test)
+        return events
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -186,13 +190,13 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
 
         print(f"Train_loss: {train_loss}")
         
-        return self.model, train_loss, vali_loss, train_duration # anomaly_threshold, k
+        return self.model, train_loss, vali_loss, train_duration
     
     #"###########################################"
 
     def test(self, setting,train_loss, vali_loss,train_duration, test=0):
         test_data, test_loader = self._get_data(flag='test')
-        
+
         test_start_time = time.time()
         if test:
             print('loading model')
@@ -203,11 +207,9 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         trues = []
         anomaly_preds=[]
         labels=[]
-        folder_path = './test_results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
+        
         total_losses = []
-        l1_loss = nn.L1Loss()
+        l1_loss = nn.L1Loss(reduction='none')
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark,seq_labels) in enumerate(test_loader):
@@ -237,16 +239,15 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 outputs = outputs[:, -self.args.pred_len:, :]
                 batch_y = batch_y[:, -self.args.pred_len:, :].to(self.device)
                 
-                loss = anomaly_criterion(outputs, batch_y)
+                loss = l1_loss(outputs, batch_y)
                 #loss = loss.mean(dim=0) 
-                print("loss.shape:",loss.shape)
+                #print("loss.shape:",loss.shape)
                 total_losses.append(loss.cpu().numpy())
                 pred = outputs.detach().cpu()
                 #true = batch_x.detach().cpu()
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
-                print("outputs.shape:",outputs.shape,"batch_y.shape",batch_y.shape)
- 
+                #print("outputs.shape:",outputs.shape,"batch_y.shape",batch_y.shape)
                 
                 if test_data.scale and self.args.inverse:
                     shape = outputs.shape
@@ -255,16 +256,14 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
 
                 outputs = outputs[:, :, f_dim:]
                 batch_y = batch_y[:, :, f_dim:]
-                #print("batch_y.shape",batch_y.shape)
                 pred = outputs
 
-                
                 true = batch_y
                 preds.append(pred)
                 trues.append(true)
                 labels.append(seq_labels)
                 labels_ = torch.stack(labels)
-                    
+
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
                     if test_data.scale and self.args.inverse:
@@ -272,7 +271,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                         input = test_data.inverse_transform(input.squeeze(0)).reshape(shape)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
+                    #visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
                     
         preds=np.array(preds)
         print("preds.shape:",preds.shape)
@@ -287,12 +286,6 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         #Result: All anomaly scores in a single 1D array, mean over the channels
         print(f"flatten total_losses.shape:{total_losses.shape}")
         
-        #this should be a run parameter 
-        kernel_sigma = 3
-        #input only scores with channels and time-points
-        #score_t_test, score_tc_test = get_gaussian_kernel_scores(total_losses,None,kernel_sigma)
-        score_t_test, score_tc_test, _, _ =  get_dynamic_scores(None, None, None,total_losses, long_window=2000, short_window=100)
-        
         preds = np.array(preds)
         trues = np.array(trues)
         #print('preds shape:', preds.shape)
@@ -300,14 +293,9 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
         #print('test shape:', preds.shape, trues.shape)
-        print("trues:",trues.shape)
+        #print("trues:",trues.shape)
         
         anomaly_preds = torch.tensor(anomaly_preds).flatten()
-        
-        # result save
-        folder_path = './test_results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
         
         # dtw calculation
         if self.args.use_dtw:
@@ -323,23 +311,24 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             dtw = np.array(dtw_list).mean()
         else:
             dtw = -999
-        
+
         test_end_time = time.time()
         test_duration = test_end_time - test_start_time
         total_time = train_duration + test_duration
-        
+
+        true_events=self.get_events(gt)
         gt = torch.stack(labels, dim=0)
         gt = gt.flatten()
-        print("score_t_test.shape",score_t_test.shape)
-        print("gt.shape",gt.shape)
-        
-        
-        opt_thres, pred_labels, avg_prec, auroc = threshold_and_predict(score_t_test,gt,true_events=None,logger=None,test_anom_frac=0.1,thres_method="best_f1_test",return_auc=True,)
-       
-        print(f"opt_thres:{opt_thres}, avg_prec:{avg_prec}, auroc:{auroc}")
-        
-        # Call the helper function to evaluate metrics
-        metrics = evaluate_metrics(gt, pred_labels, seq_len=self.args.seq_len)
+
+        if isinstance(gt, torch.Tensor):
+            gt = gt.cpu().numpy()
+
+        #input only scores with channels and time-points
+        score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(total_losses,None,self.args.kernel_sigma)
+
+        score_t_test_dyn, _, score_t_train_dyn, _ =  get_dynamic_scores(None, None, None,total_losses, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
+
+        metrics = compute_metrics(total_losses, gt, true_events,score_t_test_dyn, score_t_dyn_gauss_conv, self.args.seq_len , None, None, None)
 
         avg_test_loss = np.mean(total_losses)
         avg_train_loss = np.mean(train_loss)
@@ -351,14 +340,22 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         export_memory_usage = False
         write_to_csv(
             model_name=self.args.model,
+            model_id=self.args.model_id,
             avg_train_loss=avg_train_loss,
             avg_vali_loss=avg_vali_loss,
             avg_test_loss=avg_test_loss,
             seq_len=self.args.seq_len,
             d_model=self.args.d_model,
+            enc_in=self.args.enc_in,
             e_layers=self.args.e_layers,
+            dec_in=self.args.dec_in,
+            d_layers=self.args.d_layers,
+            c_out=self.args.c_out,
             d_ff=self.args.d_ff,
             n_heads=self.args.n_heads,
+            long_window=self.args.d_score_long_window, 
+            short_window=self.args.d_score_short_window,
+            kernel_sigma=self.args.kernel_sigma,
             train_epochs=self.args.train_epochs,
             learning_rate=self.args.learning_rate,
             anomaly_ratio=self.args.anomaly_ratio,

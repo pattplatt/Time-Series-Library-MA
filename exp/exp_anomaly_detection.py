@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider, get_events
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, adjustment, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores 
+from utils.tools import EarlyStopping, adjust_learning_rate, adjustment, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
@@ -167,10 +167,8 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 batch_x = batch_x.float().to(self.device)
                 # reconstruction
                 outputs = self.model(batch_x, None, None, None)
-                #print(f"batch_x.shape:{batch_x.shape}")
                 # criterion
                 score = torch.mean(self.anomaly_criterion(batch_x, outputs), dim=-1)
-                #print(f"score.shape:{score.shape}")
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
 
@@ -212,69 +210,12 @@ class Exp_Anomaly_Detection(Exp_Basic):
         score_t_test_dyn, _, score_t_train_dyn, _ = get_dynamic_scores(None, None, train_energy,test_energy, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
         #get dynamic scores
         score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(test_energy,None,self.args.kernel_sigma)
-
-        metrics = {}
-        metrics_best_f1 = {}
-        metrics_top_k = {}
-        metrics_top_tail_prob = {}
         
+        combined_score_t_dyn_gauss_conv, _ = get_gaussian_kernel_scores(combined_energy,None,self.args.kernel_sigma)
+
         dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
 
-        #best F1 --------------
-        #default
-        default_thres_best_f1, default_pred_labels_best_f1, default_avg_prec_best_f1, default_auroc_best_f1 = threshold_and_predict(test_energy,gt,true_events=true_events,logger=None,thres_method="best_f1_test",return_auc=True)
-
-        #dynamic
-        dyn_opt_thres_best_f1, dyn_pred_labels_best_f1, dyn_avg_prec_best_f1, dyn_auroc_best_f1 = threshold_and_predict(score_t_test_dyn,gt,true_events=true_events,logger=None,thres_method="best_f1_test",return_auc=True,)
-        
-        #dynamic gauss
-        dyn_gauss_opt_thres_best_f1, dyn_gauss_pred_labels_best_f1, dyn_gauss_avg_prec_best_f1, dyn_gauss_auroc_best_f1 = threshold_and_predict(score_t_dyn_gauss_conv,gt,true_events=true_events,logger=None,thres_method="best_f1_test",return_auc=True,)
-        
-        # Call the helper function to evaluate metrics
-        default_metrics_best_f1 = evaluate_metrics(gt, default_pred_labels_best_f1, default_auroc_best_f1, seq_len=self.args.seq_len)
-        dyn_metrics_best_f1 = evaluate_metrics(gt, dyn_pred_labels_best_f1, dyn_auroc_best_f1, seq_len=self.args.seq_len)
-        dyn_gauss_metrics_best_f1 = evaluate_metrics(gt, dyn_gauss_pred_labels_best_f1, dyn_gauss_auroc_best_f1, seq_len=self.args.seq_len)
-    
-        metrics_best_f1["default_metrics_best_f1"] = default_metrics_best_f1
-        metrics_best_f1["dyn_metrics_best_f1"] = dyn_metrics_best_f1
-        metrics_best_f1["dyn_gauss_metrics_best_f1"]= dyn_gauss_metrics_best_f1
-        metrics["metrics_best_f1"] = metrics_best_f1
-
-        #top_k -----------------
-        #default
-        default_thres_top_k_time, default_pred_labels_top_k_time, default_avg_prec_top_k_time, default_auroc_top_k_time = threshold_and_predict(test_energy,gt,true_events=true_events,logger=None,thres_method="top_k_time",return_auc=True,score_t_test_and_train=combined_energy)
-        #dynamic
-        dyn_opt_thres_top_k_time, dyn_pred_labels_top_k, dyn_avg_prec_top_k, dyn_auroc_top_k = threshold_and_predict(score_t_test_dyn,gt,true_events=true_events,logger=None,thres_method="top_k_time",return_auc=True,score_t_test_and_train=dyn_scores_combined)
-        #dynamic gauss
-        dyn_gauss_opt_thres_top_k, dyn_gauss_pred_labels_top_k, dyn_gauss_avg_prec_top_k, dyn_gauss_auroc_top_k= threshold_and_predict(score_t_dyn_gauss_conv,gt,true_events=true_events,logger=None,thres_method="top_k_time",return_auc=True)
-
-        # Call the helper function to evaluate metrics
-        default_metrics_top_k = evaluate_metrics(gt, default_pred_labels_top_k_time, default_auroc_top_k_time, seq_len=self.args.seq_len)
-        dyn_metrics_top_k = evaluate_metrics(gt, dyn_pred_labels_top_k, dyn_auroc_top_k, seq_len=self.args.seq_len)
-        dyn_gauss_metrics_top_k = evaluate_metrics(gt, dyn_gauss_pred_labels_top_k, dyn_gauss_auroc_top_k, seq_len=self.args.seq_len)
-
-        metrics_top_k["default_metrics_top_k"] = default_metrics_top_k
-        metrics_top_k["dyn_metrics_top_k"] = dyn_metrics_top_k
-        metrics_top_k["dyn_gauss_metrics_top_k"]= dyn_gauss_metrics_top_k
-        metrics["metrics_top_k"] = metrics_top_k
-
-        #tail_prob ----------------
-        #default
-        default_thres_tail_prob, default_pred_labels_tail_prob, default_avg_prec_tail_prob, default_auroc_tail_prob = threshold_and_predict(test_energy,gt,true_events=true_events,logger=None,thres_method="tail_prob",return_auc=True,score_t_test_and_train=combined_energy)
-        #dynamic
-        dyn_gauss_opt_thres_tail_prob, dyn_gauss_pred_labels_tail_prob, dyn_gauss_avg_prec_tail_prob, dyn_gauss_auroc_tail_prob = threshold_and_predict(score_t_dyn_gauss_conv,gt,true_events=true_events,logger=None,thres_method="tail_prob",return_auc=True,)
-        #dynamic gauss
-        dyn_opt_thres_tail_prob, dyn_pred_labels_tail_prob, dyn_avg_prec_tail_prob, dyn_auroc_tail_prob = threshold_and_predict(score_t_test_dyn,gt,true_events=true_events,logger=None,thres_method="tail_prob",return_auc=True,)
-        
-        # Call the helper function to evaluate metrics
-        default_metrics_tail_prob = evaluate_metrics(gt, default_pred_labels_tail_prob, default_auroc_tail_prob, seq_len=self.args.seq_len)
-        dyn_metrics_tail_prob = evaluate_metrics(gt, dyn_pred_labels_tail_prob, dyn_auroc_tail_prob, seq_len=self.args.seq_len)
-        dyn_gauss_metrics_tail_prob = evaluate_metrics(gt, dyn_gauss_pred_labels_tail_prob, dyn_gauss_auroc_tail_prob, seq_len=self.args.seq_len)
-        
-        metrics_top_tail_prob["default_metrics_tail_prob"] = default_metrics_tail_prob
-        metrics_top_tail_prob["dyn_metrics_tail_prob"] = dyn_metrics_tail_prob
-        metrics_top_tail_prob["dyn_gauss_metrics_tail_prob"]= dyn_gauss_metrics_tail_prob
-        metrics["metrics_top_tail_prob"] = metrics_top_tail_prob
+        metrics = compute_metrics(test_energy, gt, true_events,score_t_test_dyn, score_t_dyn_gauss_conv, self.args.seq_len , score_t_train_dyn, combined_energy, combined_score_t_dyn_gauss_conv)
 
         if not os.path.exists(test_results_path):
             os.makedirs(test_results_path)
