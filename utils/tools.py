@@ -482,10 +482,9 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
 
     precision, recall, f_score, _ = precision_recall_fscore_support(gt, pred, average='binary')
 
-    print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(
-        accuracy, precision, recall, f_score))
-    print("Confusion Matrix (Normalized):")
-    print(cm_normalized)
+    #print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(accuracy, precision, recall, f_score))
+    #print("Confusion Matrix (Normalized):")
+    #print(cm_normalized)
 
     # Point-adjusted F1 Score
     try:
@@ -495,11 +494,10 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
             labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
         cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
 
-        print("Adjusted Metrics:")
-        print("Accuracy: {:0.4f}, Precision: {:0.4f}, Recall: {:0.4f}, F-score: {:0.4f}".format(
-            accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
-        print("Confusion Matrix (Point-adjusted):")
-        print(cm_point_adjusted)
+        #print("Adjusted Metrics:")
+        #print("Accuracy: {:0.4f}, Precision: {:0.4f}, Recall: {:0.4f}, F-score: {:0.4f}".format(accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
+        #print("Confusion Matrix (Point-adjusted):")
+        #print(cm_point_adjusted)
     except NameError:
         print("Error: 'adjustment' function is not defined. Skipping point-adjusted metrics.")
         accuracy_point_adjusted = precision_point_adjusted = recall_point_adjusted = f_score_point_adjusted = None
@@ -509,8 +507,8 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
     try:
         true_events = get_events(gt)
         prec_t, rec_e, fscore_c, acc_c= get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
-        print("Composite F1 Score:")
-        print("Acc_c: {:0.4f},Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(acc_c, prec_t, rec_e, fscore_c))
+        #print("Composite F1 Score:")
+        #print("Acc_c: {:0.4f},Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(acc_c, prec_t, rec_e, fscore_c))
     except NameError:
         print("Error: 'get_events' or 'get_composite_fscore_raw' function is not defined. Skipping composite F1 score.")
         prec_t = rec_e = fscore_c = None
@@ -583,16 +581,12 @@ def write_to_csv(
     Returns:
     - None
     """
-
+    
     # Parameters header and data
     parameters_header = [
         "Model", "avg_train_loss", "avg_vali_loss", "avg_test_loss", "seq_len", "d_model", "enc_in","e_layers", "dec_in", "d_layers", "c_out","d_ff","n_heads","long_window","short_window","kernel_sigma","train_epochs","learning_rate","anomaly_ratio", "embed", "Total Duration (min)", "Train Duration (min)", "Test Duration (min)"]
     parameters = [
         model_name, f"{avg_train_loss:.6f}", f"{avg_vali_loss:.6f}", f"{avg_test_loss:.6f}", seq_len, d_model, enc_in,e_layers, dec_in,d_layers,c_out,d_ff,n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, anomaly_ratio, embed, f"{(total_time / 60):.2f}",f"{(train_duration/60):.2f}", f"{(test_duration/60):.2f}"]
-
-    # Ensure the test results path exists
-    #test_results_dir = os.path.join(test_results_path, setting)
-    #os.makedirs(test_results_dir, exist_ok=True)
 
     file_prefix = os.path.join(test_results_path, "results_"+ model_id )
     parameters_file = file_prefix + "_parameters.csv"
@@ -639,7 +633,7 @@ def write_to_csv(
         else:
             metrics_fc = [model_name, "Fc", "N/A", "N/A", "N/A", "N/A", "-"]
         writer.writerow(metrics_fc)
-
+    
     # Write metrics to CSV
     with open(metrics_file, 'a', newline='') as f:
         writer = csv.writer(f)
@@ -663,27 +657,125 @@ def write_to_csv(
         else:
             # Handle unexpected metrics format
             raise ValueError("The 'metrics' parameter should be a dict or a list containing two dicts.")
-
+    
+    write_f_score_metrics(model_name, model_id, metrics, test_results_path)
     # Optionally, write memory stats
     if export_memory_usage and memory_stats is not None:
         with open("Memory.csv", 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(memory_stats)
+            
+def write_f_score_metrics(model_name, model_id, metrics, test_results_path):
+    """
+    Writes specified metrics to a transposed CSV file, with metrics as rows and models as columns.
+    Computes mean scores per threshold method and overall means.
 
-def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_dyn_gauss_conv, seq_len,score_t_train_dyn=None,combined_energy=None,combined_score_t_dyn_gauss_conv=None):
+    Parameters:
+    - model_name (str): Name of the model.
+    - model_id (str): Identifier for the model.
+    - metrics (dict): Dictionary containing evaluation metrics.
+    - test_results_path (str): Path to save test results.
+
+    Returns:
+    - None
+    """
+    # Get the parent directory of test_results_path
+    parent_dir = os.path.dirname(test_results_path)
+
+    # Construct the path for aggregate_metrics.csv in the parent directory
+    metrics_csv_file = os.path.join(parent_dir, "aggregate_metrics.csv")
+    file_exists = os.path.isfile(metrics_csv_file)
+
+    # Metrics we are interested in
+    metrics_of_interest = ['f_score', 'f_score_point_adjusted', 'fscore_c', 'auroc']
+
+    # Prepare data to write: collect metrics into a dictionary
+    data_to_write = {}
+
+    # Collect metrics from the provided metrics dictionary
+    # and compute per-threshold-method mean scores
+    overall_fscores = []
+    overall_aurocs = []
+
+    for thres_method, method_metrics in metrics.items():
+        method_fscores = []
+        method_aurocs = []
+        for score_type, metric_values in method_metrics.items():
+            # Construct a unique key for each metric type
+            metric_key_prefix = f"{thres_method}_{score_type}"
+            for metric_name in metrics_of_interest:
+                if metric_name in metric_values:
+                    data_key = f"{metric_key_prefix}_{metric_name}"
+                    value = metric_values[metric_name]
+                    if isinstance(value, (int, float)):
+                        # Format to 5 decimal points
+                        value_formatted = f"{value:.5f}"
+                        data_to_write[data_key] = value_formatted
+                        # Collect values for mean computation
+                        if metric_name == 'f_score':
+                            method_fscores.append(float(value_formatted))
+                            overall_fscores.append(float(value_formatted))
+                        if metric_name == 'auroc':
+                            method_aurocs.append(float(value_formatted))
+                            overall_aurocs.append(float(value_formatted))
+                    else:
+                        data_to_write[data_key] = value  # For non-numeric values
+        # Compute mean f_score and auroc per threshold method
+        method_mean_fscore = sum(method_fscores) / len(method_fscores) if method_fscores else None
+        method_mean_auroc = sum(method_aurocs) / len(method_aurocs) if method_aurocs else None
+        # Format mean values to 5 decimal points
+        if method_mean_fscore is not None:
+            data_to_write[f"{thres_method}_mean_fscore"] = f"{method_mean_fscore:.5f}"
+        else:
+            data_to_write[f"{thres_method}_mean_fscore"] = "N/A"
+        if method_mean_auroc is not None:
+            data_to_write[f"{thres_method}_mean_auroc"] = f"{method_mean_auroc:.5f}"
+        else:
+            data_to_write[f"{thres_method}_mean_auroc"] = "N/A"
+
+    # Compute overall mean fscore and auroc per model (over all methods and score types)
+    overall_mean_fscore = sum(overall_fscores) / len(overall_fscores) if overall_fscores else None
+    overall_mean_auroc = sum(overall_aurocs) / len(overall_aurocs) if overall_aurocs else None
+    # Format overall mean values to 5 decimal points
+    if overall_mean_fscore is not None:
+        data_to_write['mean_fscore'] = f"{overall_mean_fscore:.5f}"
+    else:
+        data_to_write['mean_fscore'] = "N/A"
+    if overall_mean_auroc is not None:
+        data_to_write['mean_auroc'] = f"{overall_mean_auroc:.5f}"
+    else:
+        data_to_write['mean_auroc'] = "N/A"
+
+    # Now, prepare a DataFrame with metrics as rows and models as columns
+    # If the CSV file exists, read it
+    if os.path.isfile(metrics_csv_file):
+        df = pd.read_csv(metrics_csv_file, index_col=0)
+    else:
+        df = pd.DataFrame()
+
+    # Convert data_to_write to a DataFrame
+    model_df = pd.DataFrame.from_dict(data_to_write, orient='index', columns=[model_name+"_"+model_id])
+
+    # Combine with existing DataFrame
+    df = df.join(model_df, how='outer')
+
+    # Save the DataFrame to CSV
+    df.to_csv(metrics_csv_file)
+
+def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test_dyn_gauss_conv, seq_len,train_energy=None, score_t_train_dyn=None,score_t_train_dyn_gauss_conv=None):
     """
     Compute metrics using different thresholding methods and scoring functions.
 
     Args:
-        test_energy (np.array): The anomaly scores for the test data.
+        test_energy (np.array): The default anomaly scores for the test data.
         gt (np.array): Ground truth labels for the test data.
         true_events (dict): Dictionary of true anomaly events.
-        seq_len (int): Sequence length used in the model.
         score_t_test_dyn (np.array, optional): Dynamic scores for the test data.
+        score_t_test_dyn_gauss_conv (np.array, optional): Dynamic Gaussian convolved scores for the test data.
+        seq_len (int): Sequence length used in the model.
+        train_energy (np.array, optional):  Default anomaly scores from training data.
         score_t_train_dyn (np.array, optional): Dynamic scores for the training data.
-        score_t_dyn_gauss_conv (np.array, optional): Dynamic Gaussian convolved scores for the test data.
-        combined_energy (np.array, optional): Combined anomaly scores from training and test data.
-        combined_score_t_dyn_gauss_conv (np.array, optional): Combined dynamic Gaussian convolved scores from training and test data.
+        score_t_train_dyn_gauss_conv (np.array, optional): Dynamic Gaussian convolved scores from training data.
 
     Returns:
         dict: A dictionary containing computed metrics.
@@ -694,23 +786,25 @@ def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_dyn_
     scores = {
         'default': test_energy,
         'dyn': score_t_test_dyn,
-        'dyn_gauss': score_t_dyn_gauss_conv,
+        'dyn_gauss': score_t_test_dyn_gauss_conv,
     }
 
-    combined_scores = {
-        'default': combined_energy,  # Could be None
-    }
+    combined_scores = {}
+    
+    if train_energy is not None:
+        combined_scores['default'] = np.concatenate([test_energy, train_energy])
+    else:
+        combined_scores['default'] = None
 
     # Add 'dyn' scores if provided
-
     if score_t_train_dyn is not None:
         combined_scores['dyn'] = np.concatenate([score_t_train_dyn, score_t_test_dyn])
     else:
         combined_scores['dyn'] = None
 
     # Add 'dyn_gauss' scores if provided
-    if combined_score_t_dyn_gauss_conv is not None:
-        combined_scores['dyn_gauss'] = combined_score_t_dyn_gauss_conv
+    if score_t_train_dyn_gauss_conv is not None:
+        combined_scores['dyn_gauss'] = np.concatenate([score_t_train_dyn_gauss_conv,score_t_test_dyn_gauss_conv])
     else:
         combined_scores['dyn_gauss'] = None
 
