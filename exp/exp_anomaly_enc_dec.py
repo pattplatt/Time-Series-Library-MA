@@ -72,6 +72,9 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                
+                print("batch_y.shape",batch_y.shape)
+                print("outputs.shape",outputs.shape)
 
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
@@ -146,8 +149,13 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
+                    
+                    print("batch_y.shape",batch_y.shape)
+                    print("outputs.shape",outputs.shape)
+                    
                     train_loss.append(loss.item())
                     score = self.anomaly_criterion(outputs, batch_y)
+
                     #print("train: outputs.shape",outputs.shape)
                 
                     score = score.detach().cpu().numpy()
@@ -206,7 +214,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             print('loading model')
             self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
         criterion = self._select_criterion()
-        anomaly_criterion = nn.MSELoss(reduction='none')
+        anomaly_criterion = nn.MSELoss(reduce=False)
         preds = []
         trues = []
         anomaly_preds=[]
@@ -243,9 +251,12 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 outputs = outputs[:, -self.args.pred_len:, :]
                 batch_y = batch_y[:, -self.args.pred_len:, :].to(self.device)
                 
+                print("batch_y.shape",batch_y.shape)
+                print("outputs.shape",outputs.shape)
+
                 loss = anomaly_criterion(outputs, batch_y)
                 #loss = loss.mean(dim=0) 
-                #print("loss.shape:",loss.shape)
+                print("loss.shape:",loss.shape)
                 test_scores.append(loss.cpu().numpy())
                 pred = outputs.detach().cpu()
                 #true = batch_x.detach().cpu()
@@ -276,7 +287,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     #visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
-                    
+
         preds=np.array(preds)
         print("preds.shape:",preds.shape)
         #(total_batches, batch_size, pred_len, num_channels)
@@ -374,6 +385,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             metrics=metrics,
             test_results_path=test_results_path,
             setting=setting,
+            benchmark_id = self.args.benchmark_id,
             export_memory_usage=export_memory_usage
         )
 

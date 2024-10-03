@@ -396,6 +396,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
             metrics=metrics,
             test_results_path=test_results_path,
             setting=setting,
+            benchmark_id = self.args.benchmark_id,
             export_memory_usage=export_memory_usage
         )
 

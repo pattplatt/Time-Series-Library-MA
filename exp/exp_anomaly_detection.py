@@ -135,7 +135,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 print("Early stopping")
                 break
             adjust_learning_rate(model_optim, epoch + 1, self.args)
-        
+
         train_end_time = time.time()
         train_duration = train_end_time - training_start_time
 
@@ -143,6 +143,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
         self.model.load_state_dict(torch.load(best_model_path))
         
         return self.model, train_loss, vali_loss, train_duration
+    
     def test(self, setting,train_loss, vali_loss, train_duration, test=0):
         test_data, test_loader = self._get_data(flag='test')
         train_data, train_loader = self._get_data(flag='train')
@@ -191,7 +192,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
         attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
         test_energy = np.array(attens_energy)
         
-        combined_energy = np.concatenate([train_energy, test_energy], axis=0)
+        #combined_energy = np.concatenate([train_energy, test_energy], axis=0)
         
         test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
         test_labels = np.array(test_labels)
@@ -212,10 +213,12 @@ class Exp_Anomaly_Detection(Exp_Basic):
         score_t_test_dyn_gauss_conv, _ = get_gaussian_kernel_scores(test_energy,None,self.args.kernel_sigma)
         
         score_t_train_dyn_gauss_conv, _ = get_gaussian_kernel_scores(train_energy,None,self.args.kernel_sigma)
-
-        #dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
-        #metrics = compute_metrics(test_scores, gt, true_events,score_t_test_dyn, score_t_dyn_gauss_conv, self.args.seq_len , train_scores, score_t_train_dyn, train_score_t_dyn_gauss_conv)
+        
+        #test and train scores
         metrics = compute_metrics(test_energy, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_energy, score_t_train_dyn, score_t_train_dyn_gauss_conv)
+        
+        #only test_scores
+        #metrics = compute_metrics(test_energy, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , None, None, None)
 
         if not os.path.exists(test_results_path):
             os.makedirs(test_results_path)
@@ -248,6 +251,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
             metrics=metrics,
             test_results_path=test_results_path,
             setting=setting,
+            benchmark_id = self.args.benchmark_id,
             export_memory_usage=export_memory_usage
         )
 

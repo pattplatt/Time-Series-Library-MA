@@ -416,7 +416,7 @@ def threshold_and_predict(
 
     elif thres_method == "top_k_time":
         if score_t_test_and_train is not None:
-            print("using score_t_test_and_train")
+            #print("using score_t_test_and_train")
             opt_thres = np.nanpercentile(
                 score_t_test_and_train, 100 * (1 - test_anom_frac), interpolation="higher"
             )
@@ -550,7 +550,7 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
 def write_to_csv(
     model_name, model_id,avg_train_loss, avg_vali_loss, avg_test_loss, seq_len, d_model,enc_in, e_layers,dec_in,d_layers,c_out,
     d_ff, n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, anomaly_ratio, embed, total_time, train_duration,
-    test_duration, metrics, test_results_path, setting, export_memory_usage=False, memory_stats=None
+    test_duration, metrics, test_results_path, setting, benchmark_id,export_memory_usage=False, memory_stats=None
 ):
     """
     Writes parameters and metrics to CSV files.
@@ -658,14 +658,14 @@ def write_to_csv(
             # Handle unexpected metrics format
             raise ValueError("The 'metrics' parameter should be a dict or a list containing two dicts.")
     
-    write_f_score_metrics(model_name, model_id, metrics, test_results_path)
+    write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_results_path)
     # Optionally, write memory stats
     if export_memory_usage and memory_stats is not None:
         with open("Memory.csv", 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(memory_stats)
             
-def write_f_score_metrics(model_name, model_id, metrics, test_results_path):
+def write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_results_path):
     """
     Writes specified metrics to a transposed CSV file, with metrics as rows and models as columns.
     Computes mean scores per threshold method and overall means.
@@ -683,7 +683,8 @@ def write_f_score_metrics(model_name, model_id, metrics, test_results_path):
     parent_dir = os.path.dirname(test_results_path)
 
     # Construct the path for aggregate_metrics.csv in the parent directory
-    metrics_csv_file = os.path.join(parent_dir, "aggregate_metrics.csv")
+    print("benchmark_id:",benchmark_id)
+    metrics_csv_file = os.path.join(parent_dir, benchmark_id + "_aggregate_metrics.csv")
     file_exists = os.path.isfile(metrics_csv_file)
 
     # Metrics we are interested in
