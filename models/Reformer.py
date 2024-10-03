@@ -45,8 +45,8 @@ class Model(nn.Module):
             self.projection = nn.Linear(
                 configs.d_model * configs.seq_len, configs.num_class)
         else:
-            self.projection = nn.Linear(
-                configs.d_model, configs.c_out, bias=True)
+            self.projection = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
+            self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
 
     def long_forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         # add placeholder
@@ -125,6 +125,8 @@ class Model(nn.Module):
             return dec_out  # [B, L, D]
         if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             dec_out = self.anomaly_detection(x_enc)
+            dec_out = torch.relu(dec_out)
+            dec_out = self.projection_2(dec_out)
             return dec_out  # [B, L, D]
         if self.task_name == 'classification':
             dec_out = self.classification(x_enc, x_mark_enc)

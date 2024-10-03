@@ -51,8 +51,7 @@ class Model(nn.Module):
         if self.task_name == 'classification':
             self.act = F.gelu
             self.dropout = nn.Dropout(configs.dropout)
-            self.projection = nn.Linear(
-                configs.enc_in * configs.seq_len, configs.num_class)
+            self.projection = nn.Linear(configs.enc_in * configs.seq_len, configs.num_class)
 
     def encoder(self, x):
         seasonal_init, trend_init = self.decompsition(x)

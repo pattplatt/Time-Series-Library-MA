@@ -108,7 +108,8 @@ class Model(nn.Module):
         if self.task_name == 'imputation':
             self.projection = nn.Linear(configs.d_model, configs.c_out, bias=True)
         if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
-            self.projection = nn.Linear(configs.d_model, configs.c_out, bias=True)
+            self.projection = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
+            self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
         if self.task_name == 'classification':
             self.act = F.gelu
             self.dropout = nn.Dropout(configs.dropout)
@@ -145,6 +146,8 @@ class Model(nn.Module):
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
         # final
         dec_out = self.projection(enc_out)
+        dec_out = torch.relu(dec_out)
+        dec_out = self.projection_2(dec_out)  # (batch_size, num_classes)
         return dec_out
 
     def classification(self, x_enc, x_mark_enc):
