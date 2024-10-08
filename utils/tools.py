@@ -281,7 +281,7 @@ default_thres_config = {
     "tail_prob_3": {"tail_prob": 3},
     "tail_prob_4": {"tail_prob": 4},
     "tail_prob_5": {"tail_prob": 5},
-    "dyn_gauss": {"long_window": 10000, "short_window": 1, "kernel_sigma": 120},
+    "dyn_gauss": {"long_window": 100000, "short_window": 1, "kernel_sigma": 120},
     "nasa_npt": {
         "batch_size": 70,
         "window_size": 30,
@@ -293,15 +293,12 @@ default_thres_config = {
     },
 }
 
-
 def get_f_score(prec, rec):
     if prec == 0 and rec == 0:
         f_score = 0
     else:
         f_score = 2 * (prec * rec) / (prec + rec)
     return f_score
-
-
 def get_point_adjust_scores(y_test, pred_labels, true_events):
     tp = 0
     fn = 0
@@ -416,7 +413,6 @@ def threshold_and_predict(
 
     elif thres_method == "top_k_time":
         if score_t_test_and_train is not None:
-            #print("using score_t_test_and_train")
             opt_thres = np.nanpercentile(
                 score_t_test_and_train, 100 * (1 - test_anom_frac), interpolation="higher"
             )
@@ -434,11 +430,36 @@ def threshold_and_predict(
         opt_num = np.squeeze(np.argmax(fscore))
         opt_thres = thres[opt_num]
         pred_labels = np.where(score_t_test > opt_thres, 1, 0)
-
+        
     elif "tail_prob" in thres_method:
-        tail_neg_log_prob = config["tail_prob"]
-        opt_thres = tail_neg_log_prob
-        pred_labels = np.where(score_t_test > opt_thres, 1, 0)
+        max_fscore = -1
+        best_pred_labels = None
+        best_tail_neg_log_prob = None
+        best_key = None  # To store the key corresponding to the best f-score
+
+        # Loop over all tail_prob values in the config
+        for key in default_thres_config.keys():
+            if key.startswith("tail_prob_"):
+
+                tail_neg_log_prob = default_thres_config[key]["tail_prob"]
+                opt_thres = tail_neg_log_prob
+
+                pred_labels = np.where(score_t_test > opt_thres, 1, 0)
+
+                precision, recall, fscore, _ = precision_recall_fscore_support(
+                    y_test, pred_labels, average='binary'
+                )
+                # Keep the pred_labels with the highest f-score
+                if fscore > max_fscore:
+                    max_fscore = fscore
+                    best_pred_labels = pred_labels
+                    best_tail_neg_log_prob = tail_neg_log_prob
+                    best_key = key  # Store the key without overwriting 'key'
+
+        # After evaluating all tail_prob values, keep the best one
+        pred_labels = best_pred_labels
+        opt_thres = best_tail_neg_log_prob
+        print(f"Selected tail_prob value: {opt_thres} with f-score: {max_fscore}")
 
     elif thres_method == "nasa_npt":
         opt_thres = 0.5
@@ -453,23 +474,11 @@ def threshold_and_predict(
     if return_auc:
         avg_prec = average_precision_score(y_test, score_t_test)
         auroc = roc_auc_score(y_test, score_t_test)
-        return opt_thres, pred_labels, avg_prec, auroc
-    return opt_thres, pred_labels
+        return opt_thres, pred_labels, avg_prec, auroc, test_anom_frac
+    return opt_thres, pred_labels, test_anom_frac
 
-def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
-    """
-    Evaluate various metrics given ground truth labels and predictions.
-
-    Parameters:
-    - gt: array-like of shape (n_samples,), Ground truth labels.
-    - pred: array-like of shape (n_samples,), Predicted labels.
-    - export_memory_usage: bool, default False. If True, exports memory usage statistics to 'Memory.csv'.
-    - seq_len: int, default 1. Sequence length for normalizing confusion matrix.
-
-    Returns:
-    - metrics: dict, containing computed metrics.
-    """
-    # General Accuracy and Confusion Matrix
+def evaluate_metrics(gt, pred, auroc,seq_len=1):
+    # Generals Accuracy and Confusion Matrix
     accuracy = accuracy_score(gt, pred)
     cm = confusion_matrix(gt, pred)
 
@@ -482,10 +491,6 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
 
     precision, recall, f_score, _ = precision_recall_fscore_support(gt, pred, average='binary')
 
-    #print("Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f}".format(accuracy, precision, recall, f_score))
-    #print("Confusion Matrix (Normalized):")
-    #print(cm_normalized)
-
     # Point-adjusted F1 Score
     try:
         labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred)
@@ -494,10 +499,6 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
             labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
         cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
 
-        #print("Adjusted Metrics:")
-        #print("Accuracy: {:0.4f}, Precision: {:0.4f}, Recall: {:0.4f}, F-score: {:0.4f}".format(accuracy_point_adjusted, precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted))
-        #print("Confusion Matrix (Point-adjusted):")
-        #print(cm_point_adjusted)
     except NameError:
         print("Error: 'adjustment' function is not defined. Skipping point-adjusted metrics.")
         accuracy_point_adjusted = precision_point_adjusted = recall_point_adjusted = f_score_point_adjusted = None
@@ -507,23 +508,9 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
     try:
         true_events = get_events(gt)
         prec_t, rec_e, fscore_c, acc_c= get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
-        #print("Composite F1 Score:")
-        #print("Acc_c: {:0.4f},Prec_t: {:0.4f}, Rec_e: {:0.4f}, Fscore_c: {:0.4f}".format(acc_c, prec_t, rec_e, fscore_c))
     except NameError:
         print("Error: 'get_events' or 'get_composite_fscore_raw' function is not defined. Skipping composite F1 score.")
         prec_t = rec_e = fscore_c = None
-
-    # Optionally, export memory usage
-    if export_memory_usage:
-        try:
-            # Collect memory stats here
-            memory_stats = get_memory_stats()  # You need to define get_memory_stats()
-            # Write to file
-            with open("Memory.csv", 'a', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(memory_stats)
-        except NameError:
-            print("Error: 'get_memory_stats' function is not defined. Cannot export memory usage.")
 
     # Prepare metrics dictionary
     metrics = {
@@ -549,44 +536,15 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1,export_memory_usage=False):
 
 def write_to_csv(
     model_name, model_id,avg_train_loss, avg_vali_loss, avg_test_loss, seq_len, d_model,enc_in, e_layers,dec_in,d_layers,c_out,
-    d_ff, n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, anomaly_ratio, embed, total_time, train_duration,
-    test_duration, metrics, test_results_path, setting, benchmark_id,export_memory_usage=False, memory_stats=None
+    d_ff, n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, batch_size,anomaly_ratio, embed, total_time, train_duration,
+    test_duration, metrics, test_results_path, setting, benchmark_id, total_allocated_memory_usage, total_reserved_memory_usage
 ):
-    """
-    Writes parameters and metrics to CSV files.
-
-    Parameters:
-    - model_name (str): Name of the model.
-    - avg_train_loss (float): Average training loss.
-    - avg_vali_loss (float): Average validation loss.
-    - avg_test_loss (float): Average test loss.
-    - seq_len (int): Sequence length.
-    - d_model (int): Model dimension.
-    - e_layers (int): Number of encoder layers.
-    - d_ff (int): Dimension of feedforward network.
-    - n_heads (int): Number of attention heads.
-    - train_epochs (int): Number of training epochs.
-    - learning_rate (float): Learning rate.
-    - anomaly_ratio (float): Anomaly ratio.
-    - embed (str): Embedding type.
-    - total_time (float): Total duration in seconds.
-    - train_duration (float): Training duration in seconds.
-    - test_duration (float): Testing duration in seconds.
-    - metrics (dict or list): Dictionary or list containing evaluation metrics.
-    - test_results_path (str): Path to save test results.
-    - setting (str): Current setting or configuration name.
-    - export_memory_usage (bool, optional): If True, writes memory stats to 'Memory.csv'. Defaults to False.
-    - memory_stats (list, optional): Memory statistics to write. Required if export_memory_usage is True.
-
-    Returns:
-    - None
-    """
     
     # Parameters header and data
     parameters_header = [
-        "Model", "avg_train_loss", "avg_vali_loss", "avg_test_loss", "seq_len", "d_model", "enc_in","e_layers", "dec_in", "d_layers", "c_out","d_ff","n_heads","long_window","short_window","kernel_sigma","train_epochs","learning_rate","anomaly_ratio", "embed", "Total Duration (min)", "Train Duration (min)", "Test Duration (min)"]
+        "Model", "avg_train_loss", "avg_vali_loss", "avg_test_loss", "seq_len", "d_model", "enc_in","e_layers", "dec_in", "d_layers", "c_out","d_ff","n_heads","long_window","short_window","kernel_sigma","train_epochs","learning_rate","batch_size","anomaly_ratio", "embed", "Total Duration (min)", "Train Duration (min)", "Test Duration (min)", "Average allocated memory (MB)", "Average reserved memory (MB)"]
     parameters = [
-        model_name, f"{avg_train_loss:.6f}", f"{avg_vali_loss:.6f}", f"{avg_test_loss:.6f}", seq_len, d_model, enc_in,e_layers, dec_in,d_layers,c_out,d_ff,n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, anomaly_ratio, embed, f"{(total_time / 60):.2f}",f"{(train_duration/60):.2f}", f"{(test_duration/60):.2f}"]
+        model_name, f"{avg_train_loss:.6f}", f"{avg_vali_loss:.6f}", f"{avg_test_loss:.6f}", seq_len, d_model, enc_in,e_layers, dec_in,d_layers,c_out,d_ff,n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, batch_size, anomaly_ratio, embed, f"{(total_time / 60):.2f}",f"{(train_duration/60):.2f}", f"{(test_duration/60):.2f}",  f"{total_allocated_memory_usage:.2f}",  f"{total_reserved_memory_usage:.2f}"]
 
     file_prefix = os.path.join(test_results_path, "results_"+ model_id )
     parameters_file = file_prefix + "_parameters.csv"
@@ -659,31 +617,13 @@ def write_to_csv(
             raise ValueError("The 'metrics' parameter should be a dict or a list containing two dicts.")
     
     write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_results_path)
-    # Optionally, write memory stats
-    if export_memory_usage and memory_stats is not None:
-        with open("Memory.csv", 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(memory_stats)
             
 def write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_results_path):
-    """
-    Writes specified metrics to a transposed CSV file, with metrics as rows and models as columns.
-    Computes mean scores per threshold method and overall means.
 
-    Parameters:
-    - model_name (str): Name of the model.
-    - model_id (str): Identifier for the model.
-    - metrics (dict): Dictionary containing evaluation metrics.
-    - test_results_path (str): Path to save test results.
-
-    Returns:
-    - None
-    """
     # Get the parent directory of test_results_path
     parent_dir = os.path.dirname(test_results_path)
 
     # Construct the path for aggregate_metrics.csv in the parent directory
-    print("benchmark_id:",benchmark_id)
     metrics_csv_file = os.path.join(parent_dir, benchmark_id + "_aggregate_metrics.csv")
     file_exists = os.path.isfile(metrics_csv_file)
 
@@ -763,24 +703,8 @@ def write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_resu
     # Save the DataFrame to CSV
     df.to_csv(metrics_csv_file)
 
-def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test_dyn_gauss_conv, seq_len,train_energy=None, score_t_train_dyn=None,score_t_train_dyn_gauss_conv=None):
-    """
-    Compute metrics using different thresholding methods and scoring functions.
+def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test_dyn_gauss_conv, seq_len,train_energy=None,  score_t_train_dyn=None,score_t_train_dyn_gauss_conv=None):
 
-    Args:
-        test_energy (np.array): The default anomaly scores for the test data.
-        gt (np.array): Ground truth labels for the test data.
-        true_events (dict): Dictionary of true anomaly events.
-        score_t_test_dyn (np.array, optional): Dynamic scores for the test data.
-        score_t_test_dyn_gauss_conv (np.array, optional): Dynamic Gaussian convolved scores for the test data.
-        seq_len (int): Sequence length used in the model.
-        train_energy (np.array, optional):  Default anomaly scores from training data.
-        score_t_train_dyn (np.array, optional): Dynamic scores for the training data.
-        score_t_train_dyn_gauss_conv (np.array, optional): Dynamic Gaussian convolved scores from training data.
-
-    Returns:
-        dict: A dictionary containing computed metrics.
-    """
     metrics = {}
 
     # Prepare score dictionaries
@@ -826,7 +750,7 @@ def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test
             # If combined_scores[score_type] is None, threshold_and_predict should handle it
 
             # Apply threshold and predict
-            thres, pred_labels, avg_prec, auroc = threshold_and_predict(
+            thres, pred_labels, avg_prec, auroc ,test_anom_frac= threshold_and_predict(
                 score, gt, true_events=true_events, logger=None,
                 thres_method=thres_method, return_auc=True, **thres_args
             )
@@ -839,5 +763,87 @@ def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test
 
         metrics[f'metrics_{thres_method}'] = method_metrics
 
-    return metrics
+    return metrics, test_anom_frac
 
+def plot_loss(metrics, save_dir, file_name='train_loss_plot.png', mode="Train"):
+
+    # Check if input is a dictionary
+    if isinstance(metrics, dict):
+        # Extract iterations and loss from the metrics dictionary
+        if 'iters' not in metrics or 'loss' not in metrics:
+            raise ValueError("Dictionary must contain 'iters' and 'loss' keys.")
+        iters = metrics['iters']
+        loss = metrics['loss']
+    
+    # If input is a list, use the list as the y-axis and steps as the x-axis
+    elif isinstance(metrics, np.ndarray):
+        loss = metrics
+        iters = list(range(1, len(loss) + 1)) # X-axis as the number of steps
+    
+    else:
+        raise TypeError("Input must be either a dictionary or a list.")
+    
+    # Create a plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(iters, loss, label=f'{mode} Loss', color='blue', linewidth=2)
+    
+    # Adding labels and title
+    plt.xlabel('Iterations')
+    plt.ylabel('Loss')
+    plt.title(f'{mode} Loss over Iterations')
+    plt.legend()
+    plt.grid(True)
+
+    # Ensure save directory exists
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    # Save the plot to the specified directory
+    save_path = os.path.join(save_dir, file_name)
+    plt.savefig(save_path)
+
+    # Close the plot to free up memory
+    plt.close()
+
+    print(f"Plot saved to {save_path}")
+
+def plot_memory(metrics,save_dir, file_name='train_memory_plot.png', mode='Train', avg_reserved_memory=None):
+    # Check if input is a dictionary
+    if isinstance(metrics, dict):
+        # Extract iterations and loss from the metrics dictionary
+        if 'iters' not in metrics or 'allocated_memory' not in metrics or 'reserved_memory' not in metrics:
+            raise ValueError("Dictionary must contain 'iters' and 'allocated_memory' and 'reserved_memory' keys.")
+        iters = metrics['iters']
+        allocated_memory = metrics['allocated_memory']
+        reserved_memory = metrics['reserved_memory']
+        
+    elif isinstance(metrics, np.ndarray):
+        allocated_memory = metrics
+        iters = list(range(1, len(allocated_memory) + 1))
+        reserved_memory = avg_reserved_memory
+
+    # Create a plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(iters, allocated_memory, label='Allocated memory', color='orange', linewidth=1)
+    if reserved_memory is not None:
+        plt.plot(iters, reserved_memory, label='Reserved memory', color='purple', linewidth=2)
+
+    # Adding labels and title
+    plt.xlabel('Iterations')
+    plt.ylabel('Memory usage in MB')
+    plt.title(f'{mode}: Memory usage over Iterations')
+    plt.legend()
+    plt.grid(True)
+
+    # Ensure save directory exists
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    # Save the plot to the specified directory
+    save_path = os.path.join(save_dir, file_name)
+    plt.savefig(save_path)
+
+    # Close the plot to free up memory
+    plt.close()
+
+    print(f"Plot saved to {save_path}")
