@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider, get_events
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, visual, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics
+from utils.tools import EarlyStopping, adjust_learning_rate, visual, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics, plot_loss, plot_memory
 from utils.metrics import metric
 import torch
 import torch.nn as nn
@@ -72,17 +72,12 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                
-                print("batch_y.shape",batch_y.shape)
-                print("outputs.shape",outputs.shape)
-
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
 
                 loss = criterion(pred, true)
 
                 total_loss.append(loss.item())
-        total_loss = np.average(total_loss)
         self.model.train()
         return total_loss
 
@@ -96,17 +91,21 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             os.makedirs(path)
         time_now = time.time()
         training_start_time=time.time()
-
+        
+        metrics = {'epoch': [],'iters': [], 'loss': [], 'allocated_memory': [], 'reserved_memory': []}
+        
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
         self.anomaly_criterion = nn.MSELoss(reduce=False)
-
+        vali_loss_array = []
+        
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
-
+        total_iters=0
+        
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -114,8 +113,10 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             self.model.train()
             epoch_time = time.time()
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+                torch.cuda.reset_peak_memory_stats()
+                iter_count +=1
+                total_iters +=1
                 
-                iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
@@ -148,18 +149,15 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                    loss = criterion(outputs, batch_y)
-                    
-                    print("batch_y.shape",batch_y.shape)
-                    print("outputs.shape",outputs.shape)
-                    
+                    loss = criterion(outputs, batch_y)                    
                     train_loss.append(loss.item())
                     score = self.anomaly_criterion(outputs, batch_y)
-
-                    #print("train: outputs.shape",outputs.shape)
                 
                     score = score.detach().cpu().numpy()
                     train_energy.append(score)
+                    
+                allocated_memory = torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)  # In MB
+                reserved_memory = torch.cuda.max_memory_reserved(self.device) / (1024 ** 2)  # In MB
                 
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
@@ -168,6 +166,12 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                     iter_count = 0
                     time_now = time.time()
+                    
+                metrics['epoch'].append(epoch + 1)
+                metrics['iters'].append(total_iters)
+                metrics['loss'].append(loss.item())
+                metrics['allocated_memory'].append(allocated_memory)
+                metrics['reserved_memory'].append(reserved_memory)
 
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
@@ -178,35 +182,35 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                     model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
-            train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
-        
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss))
-            early_stopping(vali_loss, self.model, path)
+            vali_loss_array.append(vali_loss)
+
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(epoch + 1, train_steps, np.mean(train_loss), np.mean(vali_loss)))
+            early_stopping(np.mean(vali_loss), self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
-        
+
         train_energy = np.array(train_energy)
         train_energy = np.mean(train_energy, axis=-1)
         train_energy = train_energy.flatten() 
-        print("train_energy.shape:",train_energy.shape)
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
+
+        plot_loss(metrics, os.path.join('./test_results/', setting), 'training_loss_plot.png', "Train")
+        plot_loss(np.array(vali_loss_array).flatten(), os.path.join('./test_results/', setting), 'vali_loss_plot.png', 'Validation')
+        plot_memory(metrics, os.path.join('./test_results/', setting), 'training_memory_plot.png', 'Train')
+
+        avg_train_loss = np.mean(metrics['loss'])
+        avg_vali_loss = np.mean(vali_loss)
         
         train_end_time = time.time()
-        train_duration = train_end_time - training_start_time
+        train_duration = train_end_time - training_start_time        
+        return self.model, avg_train_loss, avg_vali_loss, train_duration, train_energy, metrics['allocated_memory'],  metrics['reserved_memory']
 
-        print(f"Train_loss: {train_loss}")
-        
-        return self.model, train_loss, vali_loss, train_duration, train_energy
-    
-    #"###########################################"
-
-    def test(self, setting,train_loss, vali_loss,train_duration, train_scores,test=0):
+    def test(self, setting,avg_train_loss, avg_vali_loss,train_duration, train_scores, avg_allocated_memory_train, avg_reserved_memory_train, test=0):
         test_data, test_loader = self._get_data(flag='test')
 
         test_start_time = time.time()
@@ -220,11 +224,13 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         anomaly_preds=[]
         labels=[]
         
+        test_metrics = {'iters': [], 'loss': [], 'allocated_memory': [], 'reserved_memory': []}
+        
         test_scores = []
-        l1_loss = nn.L1Loss(reduction='none')
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark,seq_labels) in enumerate(test_loader):
+                torch.cuda.reset_peak_memory_stats()
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
@@ -246,23 +252,20 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
 
                     else:
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-                
+
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, :]
                 batch_y = batch_y[:, -self.args.pred_len:, :].to(self.device)
-                
-                print("batch_y.shape",batch_y.shape)
-                print("outputs.shape",outputs.shape)
 
                 loss = anomaly_criterion(outputs, batch_y)
-                #loss = loss.mean(dim=0) 
-                print("loss.shape:",loss.shape)
+                
+                test_metrics['iters'].append(i)
+                test_metrics['loss'].append(criterion(outputs, batch_y).item())
+
                 test_scores.append(loss.cpu().numpy())
                 pred = outputs.detach().cpu()
-                #true = batch_x.detach().cpu()
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
-                #print("outputs.shape:",outputs.shape,"batch_y.shape",batch_y.shape)
                 
                 if test_data.scale and self.args.inverse:
                     shape = outputs.shape
@@ -278,6 +281,12 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 trues.append(true)
                 labels.append(seq_labels)
                 labels_ = torch.stack(labels)
+                
+                allocated_memory = torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)  # In MB
+                reserved_memory = torch.cuda.max_memory_reserved(self.device) / (1024 ** 2)  # In MB
+
+                test_metrics['allocated_memory'].append(allocated_memory)
+                test_metrics['reserved_memory'].append(reserved_memory)
 
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
@@ -286,28 +295,24 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                         input = test_data.inverse_transform(input.squeeze(0)).reshape(shape)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    #visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
+        plot_loss(test_metrics, os.path.join('./test_results/', setting), 'test_loss_plot.png','Test')
+        plot_memory(test_metrics, os.path.join('./test_results/', setting), 'test_memory_plot.png','Test')
+        
         preds=np.array(preds)
-        print("preds.shape:",preds.shape)
         #(total_batches, batch_size, pred_len, num_channels)
         test_scores = np.array(test_scores)
-        print(f"test_scores.shape:{test_scores.shape}")
         #(total_batches, batch_size, pred_len), compute mean over the channels
         test_scores = test_scores.mean(axis=-1) 
-        print(f"mean test_scores.shape:{test_scores.shape}")
         #(total_batches * batch_size * pred_len)
         test_scores = test_scores.flatten()
         #Result: All anomaly scores in a single 1D array, mean over the channels
-        print(f"flatten test_scores.shape:{test_scores.shape}")
 
         preds = np.array(preds)
         trues = np.array(trues)
-        #print('preds shape:', preds.shape)
 
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
-        #print('test shape:', preds.shape, trues.shape)
 
         anomaly_preds = torch.tensor(anomaly_preds).flatten()
 
@@ -336,22 +341,24 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
 
         if isinstance(gt, torch.Tensor):
             gt = gt.cpu().numpy()
-            
-        #combined_scores = np.concatenate([train_scores, test_scores], axis=0)
 
         score_t_test_dyn, _, score_t_train_dyn, _ =  get_dynamic_scores(None, None, train_scores,test_scores, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
         #input only scores with channels and time-points
         score_t_test_dyn_gauss_conv, _ = get_gaussian_kernel_scores(test_scores,None,self.args.kernel_sigma)
 
         score_t_train_dyn_gauss_conv, _ = get_gaussian_kernel_scores(train_scores,None,self.args.kernel_sigma)
-
-        #dyn_scores_combined = np.concatenate([score_t_train_dyn, score_t_test_dyn], axis=0)
         
-        metrics = compute_metrics(test_scores, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_scores, score_t_train_dyn, score_t_train_dyn_gauss_conv)
+        eval_metrics, anomaly_ratio = compute_metrics(test_scores, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_scores, score_t_train_dyn, score_t_train_dyn_gauss_conv)
 
-        avg_test_loss = np.mean(test_scores)
-        avg_train_loss = np.mean(train_loss)
-        avg_vali_loss = np.mean(vali_loss)
+        #transform loss & memory usage into scalar
+        avg_train_loss = np.mean(avg_train_loss)
+        avg_test_loss= np.mean(test_metrics['loss'])
+
+        total_allocated_memory_usage = np.concatenate([test_metrics['allocated_memory'],avg_allocated_memory_train])
+        total_reserved_memory_usage = np.concatenate([test_metrics['reserved_memory'],avg_reserved_memory_train])
+
+        total_allocated_memory_usage=np.mean(total_allocated_memory_usage)
+        total_reserved_memory_usage=np.mean(total_reserved_memory_usage)
 
         test_results_path = os.path.join('./test_results/', setting)
         if not os.path.exists(test_results_path):
@@ -377,16 +384,18 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             kernel_sigma=self.args.kernel_sigma,
             train_epochs=self.args.train_epochs,
             learning_rate=self.args.learning_rate,
-            anomaly_ratio=self.args.anomaly_ratio,
+            batch_size=self.args.batch_size,
+            anomaly_ratio=anomaly_ratio,
             embed=self.args.embed,
             total_time=total_time,
             train_duration=train_duration,
             test_duration=test_duration,
-            metrics=metrics,
+            metrics=eval_metrics,
             test_results_path=test_results_path,
             setting=setting,
             benchmark_id = self.args.benchmark_id,
-            export_memory_usage=export_memory_usage
+            total_allocated_memory_usage=total_allocated_memory_usage,
+            total_reserved_memory_usage=total_reserved_memory_usage
         )
 
         return
