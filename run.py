@@ -28,6 +28,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
     parser.add_argument('--model', type=str, required=True, default='Autoformer',
                         help='model name, options: [Autoformer, Transformer, TimesNet]')
+    parser.add_argument('--benchmark_id', type=str, required=True, default='benchmark_1', help='benchmark id')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='ETTm1', help='dataset type')
@@ -58,9 +59,9 @@ if __name__ == '__main__':
     parser.add_argument('--point_adjustment', action='store_true', help='activate point adjustment for anomaly detection')
     parser.add_argument('--dim_ff_dec', type=int, default=256, help='dimension of second decoder ff layer')
     
-    parser.add_argument('--kernel_sigma', type=int, default=3, help='sigma of gaussian kernel function')
-    parser.add_argument('--d_score_long_window', type=int, default=1000, help='long window size of dynamic scoring')
-    parser.add_argument('--d_score_short_window', type=int, default=10, help='short window size of dynamic scoring')
+    parser.add_argument('--kernel_sigma', type=int, default=120, help='sigma of gaussian kernel function')
+    parser.add_argument('--d_score_long_window', type=int, default=100000, help='long window size of dynamic scoring')
+    parser.add_argument('--d_score_short_window', type=int, default=1, help='short window size of dynamic scoring')
 
     # model define
     parser.add_argument('--expand', type=int, default=2, help='expansion factor for Mamba')
@@ -198,19 +199,21 @@ if __name__ == '__main__':
                 args.factor,
                 args.embed,
                 args.distil,
-                args.des, ii)
+                args.des,
+                args.benchmark_id,
+                ii)
             
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             if args.task_name == 'anomaly_detection' or args.task_name == 'anomaly_detection_uae':
-                _, train_loss, val_loss, train_duration = exp.train(setting)
+                _, train_loss, val_loss, train_duration, avg_allocated_memory_train, avg_reserved_memory_train= exp.train(setting)
             elif args.task_name == 'long_term_forecast' or args.task_name == 'enc_dec_anomaly':
-                _, train_loss, val_loss, train_duration , train_energy= exp.train(setting)
+                _, train_loss, val_loss, train_duration , train_energy, avg_allocated_memory_train, avg_reserved_memory_train = exp.train(setting)
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             if args.task_name == 'anomaly_detection' or args.task_name == 'anomaly_detection_uae':
-                exp.test(setting,train_loss, val_loss, train_duration)
+                exp.test(setting,train_loss, val_loss, train_duration, avg_allocated_memory_train, avg_reserved_memory_train)
             elif args.task_name == 'long_term_forecast' or args.task_name == 'enc_dec_anomaly':
-                exp.test(setting,train_loss, val_loss, train_duration,train_energy)
+                exp.test(setting,train_loss, val_loss, train_duration,train_energy, avg_allocated_memory_train, avg_reserved_memory_train)
                 
             torch.cuda.empty_cache()
     else:
@@ -234,6 +237,7 @@ if __name__ == '__main__':
             args.factor,
             args.embed,
             args.distil,
+            args.benchmark_id,
             args.des, ii)
 
         exp = Exp(args)  # set experiments
