@@ -771,7 +771,21 @@ class WADISegLoader(Dataset):
             self.test = self.scaler.transform(self.test)
         self.val = self.train[(int)(data_len * 0.8):]
         
-        if args.task_name == 'anomaly_detection_uae':     
+        if args.task_name == 'anomaly_detection_uae':
+            
+            mean_train = np.mean(self.train, axis=0)
+            std_train = np.std(self.train, axis=0)
+
+            # Avoid division by zero
+            std_train[std_train == 0] = 1
+
+            # Standardize training data
+            self.train = (self.train - mean_train) / std_train
+
+            # Apply the same transformation to test and validation data
+            self.test = (self.test - mean_train) / std_train
+            self.val = (self.val - mean_train) / std_train
+            
             for dim in range(len(self.train[0])):
                 X_min = np.min(self.train[:,dim:dim+1], axis=0)
                 X_max = np.max(self.train[:,dim:dim+1], axis=0)
@@ -791,8 +805,7 @@ class WADISegLoader(Dataset):
                     self.test[:, dim] = (self.test[:, dim] - X_min) / (X_max - X_min)
                 else:
                     self.test[:, dim] = 0
-
-
+                    
             for dim in range(len(self.val[0])):            
                 X_min = np.min(self.val[:,dim:dim+1], axis=0)
                 X_max = np.max(self.val[:,dim:dim+1], axis=0)
@@ -815,6 +828,7 @@ class WADISegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
 
     def __getitem__(self, index):
+
         index = index * self.step
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
@@ -827,7 +841,7 @@ class WADISegLoader(Dataset):
             return np.float32(self.test[
                               index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
-        
+
 class HTTPSegLoader(Dataset):
     def __init__(self, args, root_path, win_size, step=1, flag="train"):
         self.flag = flag
@@ -872,7 +886,6 @@ class HTTPSegLoader(Dataset):
 
     def __getitem__(self, index):
         index = index * self.step
-        print("self.train.shape",self.train.shape)
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.train_labels[index:index + self.win_size])
         elif self.flag == 'val':
@@ -978,4 +991,3 @@ class WADI_F_SegLoader(Dataset):
             return (len(self.data_x) - self.seq_len) // self.pred_len
         else:
             return len(self.data_x) - self.seq_len - self.pred_len + 1
-    
