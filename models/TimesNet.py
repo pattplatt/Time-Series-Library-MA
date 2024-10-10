@@ -91,9 +91,13 @@ class Model(nn.Module):
                 self.seq_len, self.pred_len + self.seq_len)
             self.projection = nn.Linear(
                 configs.d_model, configs.c_out, bias=True)
-        if self.task_name == 'imputation' or self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
-            self.projection = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
-            self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
+        if self.task_name == 'imputation':
+            self.projection = nn.Linear(configs.d_model, configs.c_out, bias=True)
+        if self.task_name == 'anomaly_detection':
+            self.linear = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
+            self.projection = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
+        if self.task_name == 'anomaly_detection_uae':
+            self.projection = nn.Linear(configs.d_model, configs.c_out, bias=True)
         if self.task_name == 'classification':
             self.act = F.gelu
             self.dropout = nn.Dropout(configs.dropout)
@@ -170,10 +174,17 @@ class Model(nn.Module):
         for i in range(self.layer):
             enc_out = self.layer_norm(self.model[i](enc_out))
         # porject back
-        dec_out = self.projection(enc_out)
+        #dec_out = self.projection(enc_out)
+        #dec_out = torch.relu(dec_out)
+        #dec_out = self.projection_2(dec_out)
         
-        dec_out = torch.relu(dec_out)
-        dec_out = self.projection_2(dec_out)
+        if self.task_name == 'anomaly_detection_uae':
+            dec_out = self.projection(enc_out)
+        else:
+            dec_out = self.linear(enc_out)
+            dec_out = torch.relu(dec_out)
+            dec_out = self.projection(dec_out)  # (batch_size, num_classes)
+        return dec_out
 
         # De-Normalization from Non-stationary Transformer
         dec_out = dec_out * \

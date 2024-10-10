@@ -44,9 +44,13 @@ class Model(nn.Module):
             self.dropout = nn.Dropout(configs.dropout)
             self.projection = nn.Linear(
                 configs.d_model * configs.seq_len, configs.num_class)
+        if self.task_name == 'anomaly_detection':
+            self.linear = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
+            self.ff_projection = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
+        if self.task_name == 'anomaly_detection_uae':
+            self.projection = nn.Linear(configs.d_model, configs.c_out, bias=True)
         else:
-            self.projection = nn.Linear(configs.d_model, configs.dim_ff_dec, bias=True)
-            self.projection_2 = nn.Linear(configs.dim_ff_dec, configs.c_out, bias=True)
+            self.projection = nn.Linear(configs.d_model, configs.c_out, bias=True)
 
     def long_forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         # add placeholder
@@ -91,11 +95,16 @@ class Model(nn.Module):
 
     def anomaly_detection(self, x_enc):
         enc_out = self.enc_embedding(x_enc, None)  # [B,T,C]
-
         enc_out, attns = self.encoder(enc_out)
-        enc_out = self.projection(enc_out)
-
-        return enc_out  # [B, L, D]
+        #enc_out = self.projection(enc_out)
+        if self.task_name == 'anomaly_detection_uae':
+            print("anomaly_detection_uae")
+            dec_out = self.projection(enc_out)
+        else:
+            dec_out = self.linear(enc_out)
+            dec_out = torch.relu(dec_out)
+            dec_out = self.ff_projection(dec_out) 
+        return dec_out  # [B, L, D]
 
     def classification(self, x_enc, x_mark_enc):
         # enc
@@ -125,8 +134,6 @@ class Model(nn.Module):
             return dec_out  # [B, L, D]
         if self.task_name == 'anomaly_detection' or self.task_name == 'anomaly_detection_uae':
             dec_out = self.anomaly_detection(x_enc)
-            dec_out = torch.relu(dec_out)
-            dec_out = self.projection_2(dec_out)
             return dec_out  # [B, L, D]
         if self.task_name == 'classification':
             dec_out = self.classification(x_enc, x_mark_enc)
