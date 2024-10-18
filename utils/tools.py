@@ -8,6 +8,9 @@ from scipy import signal
 from scipy.stats import norm
 from datetime import datetime
 import csv
+from numba import njit
+import pickle
+from concurrent.futures import ProcessPoolExecutor
 from sklearn.metrics import (
     precision_recall_curve,
     roc_curve,
@@ -39,7 +42,6 @@ def adjust_learning_rate(optimizer, epoch, args):
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         print('Updating learning rate to {}'.format(lr))
-
 
 class EarlyStopping:
     def __init__(self, patience=7, verbose=False, delta=0):
@@ -103,7 +105,148 @@ def visual(true, preds=None, name='./pic/test.pdf'):
     plt.legend()
     plt.savefig(name, bbox_inches='tight')
 
+def fit_univar_distr(scores_arr: np.ndarray, distr='univar_gaussian'):
+    """
+    :param scores_arr: 1d array of reconstruction errors
+    :param distr: the name of the distribution to be fitted to anomaly scores on train data
+    :return: params dict with distr name and parameters of distribution
+    """
+    distr_params = {'distr': distr}
+    constant_std = 0.000001
+    if distr == "univar_gaussian":
+        mean = np.mean(scores_arr)
+        std = np.std(scores_arr)
+        if std == 0.0:
+            std += constant_std
+        distr_params["mean"] = mean
+        distr_params["std"] = std
+    elif distr == "univar_lognormal":
+        shape, loc, scale = lognorm.fit(scores_arr)
+        distr_params["shape"] = shape
+        distr_params["loc"] = loc
+        distr_params["scale"] = scale
+    elif distr == "univar_lognorm_add1_loc0":
+        shape, loc, scale = lognorm.fit(scores_arr + 1.0, floc=0.0)
+        if shape == 0.0:
+            shape += constant_std
+        distr_params["shape"] = shape
+        distr_params["loc"] = loc
+        distr_params["scale"] = scale
+    elif distr == "chi":
+        estimated_df = chi.fit(scores_arr)[0]
+        df = round(estimated_df)
+        distr_params["df"] = df
+    else:
+        print("This distribution is unknown or has not been implemented yet, a univariate gaussian will be used")
+        mean = np.mean(scores_arr)
+        std = np.std(scores_arr)
+        distr_params["mean"] = mean
+        distr_params["std"] = std
+    return distr_params
 
+def get_scores_channelwise(distr_params, train_raw_scores, val_raw_scores, test_raw_scores, drop_set=set([]), logcdf=False):
+    use_ch = list(set(range(test_raw_scores.shape[1])) - drop_set)
+    train_prob_scores = -1 * np.concatenate(([get_per_channel_probas(train_raw_scores[:, i].reshape(-1, 1), distr_params[i], logcdf=logcdf)
+                                        for i in range(train_raw_scores.shape[1])]), axis=1)
+    test_prob_scores = [get_per_channel_probas(test_raw_scores[:, i].reshape(-1, 1), distr_params[i], logcdf=logcdf)
+                                       for i in range(train_raw_scores.shape[1])]
+    test_prob_scores = -1 * np.concatenate(test_prob_scores, axis=1)
+
+    train_ano_scores = np.sum(train_prob_scores[:, use_ch], axis=1)
+    test_ano_scores = np.sum(test_prob_scores[:, use_ch], axis=1)
+
+    if val_raw_scores is not None:
+        val_prob_scores = -1 * np.concatenate(([get_per_channel_probas(val_raw_scores[:, i].reshape(-1, 1), distr_params[i], logcdf=logcdf)
+                                          for i in range(train_raw_scores.shape[1])]), axis=1)
+        val_ano_scores = np.sum(val_prob_scores[:, use_ch], axis=1)
+    else:
+        val_ano_scores = None
+        val_prob_scores = None
+    return train_ano_scores, val_ano_scores, test_ano_scores, train_prob_scores, val_prob_scores, test_prob_scores
+
+# Computes (when not already saved) parameters for scoring distributions
+def fit_distributions(distr_par_file, distr_names, predictions_dic, val_only=False):
+    #try:
+        #with open(distr_par_file, 'rb') as file:
+            #distributions_dic = pickle.load(file)
+    #except:
+        #print("not found")
+    distributions_dic = {}
+    for distr_name in distr_names:
+        if distr_name in distributions_dic.keys():
+            continue
+        else:
+            print("The distribution parameters for %s for this algorithm on this data set weren't found. \
+            Will fit them" % distr_name)
+            if "val_raw_scores" in predictions_dic:
+                raw_scores = np.concatenate((predictions_dic["train_raw_scores"], predictions_dic["val_raw_scores"]))
+            else:
+                raw_scores = predictions_dic["train_raw_scores"]
+            if raw_scores.ndim == 1:
+                raw_scores = raw_scores.reshape(-1, 1)
+                
+            distributions_dic[distr_name] = [fit_univar_distr(raw_scores[:, i], distr=distr_name)
+                                             for i in range(raw_scores.shape[1])]
+    with open(distr_par_file, 'wb') as file:
+        pickle.dump(distributions_dic, file)
+
+    return distributions_dic
+
+def get_per_channel_probas(pred_scores_arr, params, logcdf=False):
+    """
+    :param pred_scores_arr: 1d array of the reconstruction errors for one channel
+    :param params: must contain key 'distr' and corresponding params
+    :return: array of negative log pdf of same length as pred_scores_arr
+    """
+    distr = params["distr"]
+    probas = None
+    constant_std = 0.000001
+    if distr == "univar_gaussian":
+        assert ("mean" in params.keys() and ("std" in params.keys()) or "variance" in params.keys()), \
+            "The mean and/or standard deviation are missing, we can't define the distribution"
+        if "std" in params.keys():
+            if params["std"] == 0.0:
+                params["std"] += constant_std
+            distribution = norm(params["mean"], params["std"])
+
+        else:
+            distribution = norm(params["mean"], np.sqrt(params["variance"]))
+    elif distr == "univar_lognormal":
+        assert ("shape" in params.keys() and "loc" in params.keys() and "scale" in params.keys()), "The shape or scale \
+                    or loc are missing, we can't define the distribution"
+        shape = params["shape"]
+        loc = params["loc"]
+        scale = params["scale"]
+        distribution = lognorm(s=shape, loc=loc, scale=scale)
+    elif distr == "univar_lognorm_add1_loc0":
+        assert ("shape" in params.keys() and "loc" in params.keys() and "scale" in params.keys()), "The shape or scale \
+                    or loc are missing, we can't define the distribution"
+        shape = params["shape"]
+        loc = params["loc"]
+        scale = params["scale"]
+        distribution = lognorm(s=shape, loc=loc, scale=scale)
+        if logcdf:
+            probas = distribution.logsf(pred_scores_arr + 1.0)
+        else:
+            probas = distribution.logpdf(pred_scores_arr + 1.0)
+    elif distr == "chi":
+        assert "df" in params.keys(), "The number of degrees of freedom is missing, we can't define the distribution"
+        df = params["df"]
+        distribution = chi(df)
+    else:
+        print("This distribution is unknown or has not been implemented yet, a univariate gaussian will be used")
+        assert ("mean" in params.keys() and "std" in params.keys()), "The mean and/or standard deviation are missing, \
+        we can't define the distribution"
+        distribution = norm(params["mean"], params["std"])
+
+    if probas is None:
+        if logcdf:
+            probas = distribution.logsf(pred_scores_arr)
+        else:
+            probas = distribution.logpdf(pred_scores_arr)
+
+    return probas
+    
 def adjustment(gt, pred):
     anomaly_state = False
     for i in range(len(gt)):
@@ -168,24 +311,6 @@ def get_negative_intervals(true_events, total_length):
         negative_intervals.append((prev_end + 1, total_length - 1))
 
     return negative_intervals
-
-def get_composite_fscore_raw(pred_labels, true_events, y_test, return_prec_rec=False):
-    tp = np.sum([pred_labels[start:end + 1].any() for start, end in true_events.values()])
-    total_length = len(y_test)
-    # Get Negative Intervals
-    negative_intervals = get_negative_intervals(true_events, total_length)
-    tn = np.sum([not pred_labels[start:end + 1].any() for start, end in negative_intervals])
-    fp = np.sum([pred_labels[start:end + 1].any() for start, end in negative_intervals])
-    fn = len(true_events) - tp
-    acc_c = (tp+tn)/(tp+tn+fn+fp)
-    rec_e = tp/(tp + fn)
-    prec_t = precision_score(y_test, pred_labels)
-    fscore_c = 2 * rec_e * prec_t / (rec_e + prec_t)
-    if prec_t == 0 and rec_e == 0:
-        fscore_c = 0
-    if return_prec_rec:
-        return prec_t, rec_e, fscore_c, acc_c
-    return fscore_c
 
 def get_dynamic_scores(error_tc_train, error_tc_test, error_t_train, error_t_test, long_window=2000, short_window=10):
     # if error_tc is available, it will be used rather than error_t
@@ -273,14 +398,14 @@ def get_gaussian_kernel_scores(score_t_dyn, score_tc_dyn, kernel_sigma):
 
 default_thres_config = {
     "top_k_time": {},
-    "best_f1_test": {"exact_pt_adj": True},
+    "best_f1_test": {"exact_pt_adj": False},
     "thresholded_score": {},
-    "tail_prob": {"tail_prob": 2},
-    "tail_prob_1": {"tail_prob": 1},
-    "tail_prob_2": {"tail_prob": 2},
-    "tail_prob_3": {"tail_prob": 3},
-    "tail_prob_4": {"tail_prob": 4},
-    "tail_prob_5": {"tail_prob": 5},
+    "tail_prob": {"tail_prob": 2*123},
+    "tail_prob_1": {"tail_prob": 123},
+    "tail_prob_2": {"tail_prob": 2*123},
+    "tail_prob_3": {"tail_prob": 3*123},
+    "tail_prob_4": {"tail_prob": 4*123},
+    "tail_prob_5": {"tail_prob": 5*123},
     "dyn_gauss": {"long_window": 100000, "short_window": 1, "kernel_sigma": 120},
     "nasa_npt": {
         "batch_size": 70,
@@ -299,6 +424,7 @@ def get_f_score(prec, rec):
     else:
         f_score = 2 * (prec * rec) / (prec + rec)
     return f_score
+
 def get_point_adjust_scores(y_test, pred_labels, true_events):
     tp = 0
     fn = 0
@@ -313,7 +439,6 @@ def get_point_adjust_scores(y_test, pred_labels, true_events):
     prec, rec, fscore = get_prec_rec_fscore(tp, fp, fn)
     return fp, fn, tp, prec, rec, fscore
 
-
 def get_prec_rec_fscore(tp, fp, fn):
     if tp == 0:
         precision = 0
@@ -324,16 +449,11 @@ def get_prec_rec_fscore(tp, fp, fn):
     fscore = get_f_score(precision, recall)
     return precision, recall, fscore
 
-
-def get_composite_fscore_from_scores(
-    score_t_test, thres, true_events, prec_t, return_prec_rec=False
-):
-    pred_labels = score_t_test > thres
-    tp = np.sum(
-        [pred_labels[start : end + 1].any() for start, end in true_events.values()]
-    )
+def get_composite_fscore_raw(pred_labels, true_events, y_test, return_prec_rec=False):
+    tp = np.sum([pred_labels[start:end + 1].any() for start, end in true_events.values()])
     fn = len(true_events) - tp
-    rec_e = tp / (tp + fn)
+    rec_e = tp/(tp + fn)
+    prec_t = precision_score(y_test, pred_labels)
     fscore_c = 2 * rec_e * prec_t / (rec_e + prec_t)
     if prec_t == 0 and rec_e == 0:
         fscore_c = 0
@@ -341,6 +461,50 @@ def get_composite_fscore_from_scores(
         return prec_t, rec_e, fscore_c
     return fscore_c
 
+def get_composite_fscore_from_scores(score_t_test, thres, true_events, prec_t, return_prec_rec=False):
+    pred_labels = score_t_test > thres
+    tp = np.sum([pred_labels[start:end + 1].any() for start, end in true_events.values()])
+    fn = len(true_events) - tp
+    rec_e = tp/(tp + fn)
+    fscore_c = 2 * rec_e * prec_t / (rec_e + prec_t)
+    if prec_t == 0 and rec_e == 0:
+        fscore_c = 0
+    if return_prec_rec:
+        return prec_t, rec_e, fscore_c
+    return fscore_c
+
+@njit
+def compute_tp(pred_labels, event_starts, event_ends):
+    tp = 0
+    for i in range(len(event_starts)):
+        start = event_starts[i]
+        end = event_ends[i]
+        for j in range(start, end + 1):
+            if pred_labels[j]:
+                tp += 1
+                break  # Stop after first positive in event
+    return tp
+
+def get_composite_fscore_from_scores_optimized(score_t_test, thres,true_events ,prec_t):
+    
+    event_starts = np.array([start for start, end in true_events.values()])
+    event_ends = np.array([end for start, end in true_events.values()])
+    
+    pred_labels = score_t_test > thres
+    pred_labels = pred_labels.astype(np.bool_)
+    tp = compute_tp(pred_labels, event_starts, event_ends)
+    fn = len(event_starts) - tp
+    rec_e = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    fscore_c = (
+        2 * rec_e * prec_t / (rec_e + prec_t) if (rec_e + prec_t) > 0 else 0.0
+    )
+    return fscore_c
+
+from functools import partial
+
+def compute_fscore_c(args, score_t_test,true_events):
+    thres, prec_t = args
+    return get_composite_fscore_from_scores(score_t_test, thres, true_events,prec_t)
 
 def threshold_and_predict(
     score_t_test,
@@ -361,16 +525,10 @@ def threshold_and_predict(
     else:
         config = default_thres_config[thres_method]
         
-    #print("type(score_t_test_and_train):",type(score_t_test_and_train))  # Check the type
     if score_t_test_and_train is not None:        
         test_anom_frac = (np.sum(y_test)) / len(score_t_test_and_train)
-        #print(f"if: test_anom_frac:{test_anom_frac}")
-        #print()
     else:
         test_anom_frac = (np.sum(y_test)) / len(y_test)
-        #print(f"else: test_anom_frac:{test_anom_frac}")
-        #print()
-        
     auroc = None
     avg_prec = None
     if thres_method == "thresholded_score":
@@ -380,7 +538,7 @@ def threshold_and_predict(
             pred_labels = np.zeros(len(score_t_test))
         else:
             pred_labels = score_t_test
-
+            
     elif thres_method == "best_f1_test" and point_adjust:
         prec, rec, thresholds = precision_recall_curve(
             y_test, score_t_test, pos_label=1
@@ -402,19 +560,21 @@ def threshold_and_predict(
         pred_labels = score_t_test > opt_thres
 
     elif thres_method == "best_f1_test" and composite_best_f1:
-        prec, rec, thresholds = precision_recall_curve(
-            y_test, score_t_test, pos_label=1
-        )
-        precs_t = prec
-        fscores_c = [
-            get_composite_fscore_from_scores(score_t_test, thres, true_events, prec_t)
-            for thres, prec_t in zip(thresholds, precs_t)
-        ]
+        prec, rec, thresholds = precision_recall_curve(y_test, score_t_test)
+        precs_t = prec        
+        # Prepare args_list
+        #args_list = list(zip(thresholds, precs_t))
+        # Fix score_t_test using partial
+        #compute_fscore_c_partial = partial(compute_fscore_c, score_t_test=score_t_test, true_events=true_events)
+        #with ProcessPoolExecutor() as executor:
+         #   fscores_c = list(executor.map(compute_fscore_c_partial, args_list))
+
+        fscores_c = [get_composite_fscore_from_scores(score_t_test, thres, true_events,prec_t) for thres, prec_t in zip(thresholds, precs_t)]
         try:
             opt_thres = thresholds[np.nanargmax(fscores_c)]
         except:
             opt_thres = 0.0
-        pred_labels = score_t_test > opt_thres
+        pred_labels = np.where(score_t_test > opt_thres, 1, 0)
 
     elif thres_method == "top_k_time":
         if score_t_test_and_train is not None:
@@ -426,16 +586,17 @@ def threshold_and_predict(
                 score_t_test, 100 * (1 - test_anom_frac), interpolation="higher"
             )
         pred_labels = np.where(score_t_test > opt_thres, 1, 0)
-
+            
     elif thres_method == "best_f1_test":
-        prec, rec, thres = precision_recall_curve(y_test, score_t_test, pos_label=1)
+        prec, rec, thres = precision_recall_curve(y_test, score_t_test)
+        
         fscore = [
             get_f_score(precision, recall) for precision, recall in zip(prec, rec)
         ]
-        opt_num = np.squeeze(np.argmax(fscore))
+        opt_num = np.squeeze(np.nanargmax(fscore))
         opt_thres = thres[opt_num]
         pred_labels = np.where(score_t_test > opt_thres, 1, 0)
-        
+
     elif "tail_prob" in thres_method:
         max_fscore = -1
         best_pred_labels = None
@@ -464,31 +625,33 @@ def threshold_and_predict(
         # After evaluating all tail_prob values, keep the best one
         pred_labels = best_pred_labels
         opt_thres = best_tail_neg_log_prob
-        print(f"Selected tail_prob value: {opt_thres} with f-score: {max_fscore}")
+        print("tail_prob")
+        print(f"opt_thres:{opt_thres}")
+        print(f"fscore:{fscore}")
 
     elif thres_method == "nasa_npt":
         opt_thres = 0.5
         pred_labels = get_npt_labels(score_t_test, y_test, config)
     else:
+        print("Thresholding method {} not in [top_k_time, best_f1_test, tail_prob]")
         logger.error(
             "Thresholding method {} not in [top_k_time, best_f1_test, tail_prob]".format(
                 thres_method
             )
         )
         return None, None
-    
+        
     if return_auc:
         avg_prec = average_precision_score(y_test, score_t_test)
         auroc = roc_auc_score(y_test, score_t_test)
         return opt_thres, pred_labels, avg_prec, auroc, test_anom_frac
     return opt_thres, pred_labels, test_anom_frac
 
-def evaluate_metrics(gt, pred, auroc,seq_len=1):
+def evaluate_metrics(gt, pred, auroc, pred_best_fpa=None, pred_best_fc=None, auroc_pa=None, auroc_c=None, seq_len=1):
     # Generals Accuracy and Confusion Matrix
     accuracy = accuracy_score(gt, pred)
     cm = confusion_matrix(gt, pred)
-
-    # Avoid division by zero in case seq_len is zero
+    #normal F1-Score
     if seq_len == 0:
         print("Warning: seq_len is zero. Normalized confusion matrix cannot be computed.")
         cm_normalized = cm
@@ -499,12 +662,20 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1):
 
     # Point-adjusted F1 Score
     try:
-        labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred)
+        if pred_best_fpa is not None:
+            labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred_best_fpa.copy())
+        else:
+            labels_point_adjusted, anomaly_preds_point_adjusted = adjustment(gt, pred.copy())
+            
         accuracy_point_adjusted = accuracy_score(labels_point_adjusted, anomaly_preds_point_adjusted)
         precision_point_adjusted, recall_point_adjusted, f_score_point_adjusted, _ = precision_recall_fscore_support(
-            labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
+        labels_point_adjusted, anomaly_preds_point_adjusted, average='binary')
         cm_point_adjusted = confusion_matrix(labels_point_adjusted, anomaly_preds_point_adjusted)
-
+        if auroc_pa is not None:
+            auroc_pa=auroc_pa
+        else:
+            auroc_pa=auroc
+        
     except NameError:
         print("Error: 'adjustment' function is not defined. Skipping point-adjusted metrics.")
         accuracy_point_adjusted = precision_point_adjusted = recall_point_adjusted = f_score_point_adjusted = None
@@ -513,9 +684,16 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1):
     # Composite F1 Score
     try:
         true_events = get_events(gt)
-        prec_t, rec_e, fscore_c, acc_c= get_composite_fscore_raw(pred, true_events, gt, return_prec_rec=True)
+        if pred_best_fc is not None:
+            prec_t, rec_e, fscore_c= get_composite_fscore_raw(pred_best_fc.copy(), true_events, gt, return_prec_rec=True)
+        else:               
+            prec_t, rec_e, fscore_c= get_composite_fscore_raw(pred.copy(), true_events, gt, return_prec_rec=True)
+        if auroc_c is not None:
+            auroc_c=auroc_c
+        else:
+            auroc_c=auroc
+        
     except NameError:
-        print("Error: 'get_events' or 'get_composite_fscore_raw' function is not defined. Skipping composite F1 score.")
         prec_t = rec_e = fscore_c = None
 
     # Prepare metrics dictionary
@@ -531,13 +709,14 @@ def evaluate_metrics(gt, pred, auroc,seq_len=1):
         'recall_point_adjusted': recall_point_adjusted,
         'f_score_point_adjusted': f_score_point_adjusted,
         'cm_point_adjusted': cm_point_adjusted,
-        'acc_c': acc_c,
+        'acc_c': accuracy,
         'prec_t': prec_t,
         'rec_e': rec_e,
         'fscore_c': fscore_c,
         'auroc':auroc,
+        'auroc_pa':auroc_pa,
+        'auroc_c':auroc_c,
     }
-
     return metrics
 
 def write_to_csv(
@@ -545,7 +724,6 @@ def write_to_csv(
     d_ff, n_heads, long_window, short_window, kernel_sigma, train_epochs, learning_rate, batch_size,anomaly_ratio, embed, total_time, train_duration,
     test_duration, metrics, test_results_path, setting, benchmark_id, total_allocated_memory_usage, total_reserved_memory_usage
 ):
-    
     # Parameters header and data
     parameters_header = [
         "Model", "avg_train_loss", "avg_vali_loss", "avg_test_loss", "seq_len", "d_model", "enc_in","e_layers", "dec_in", "d_layers", "c_out","d_ff","n_heads","long_window","short_window","kernel_sigma","train_epochs","learning_rate","batch_size","anomaly_ratio", "embed", "Total Duration (min)", "Train Duration (min)", "Test Duration (min)", "Average allocated memory (MB)", "Average reserved memory (MB)"]
@@ -583,7 +761,7 @@ def write_to_csv(
             metrics_fpa = [
                 model_name, "Fpa", f"{metrics_dict['accuracy_point_adjusted']:.4f}",
                 f"{metrics_dict['precision_point_adjusted']:.4f}", f"{metrics_dict['recall_point_adjusted']:.4f}",
-                f"{metrics_dict['f_score_point_adjusted']:.4f}",f"{metrics_dict.get('auroc', 'N/A'):.4f}", f"{metrics_dict['cm_point_adjusted']}"
+                f"{metrics_dict['f_score_point_adjusted']:.4f}",f"{metrics_dict.get('auroc_pa', 'N/A'):.4f}", f"{metrics_dict['cm_point_adjusted']}"
             ]
         else:
             metrics_fpa = [model_name, "Fpa", "N/A", "N/A", "N/A", "N/A", "N/A"]
@@ -592,7 +770,7 @@ def write_to_csv(
         # Composite F1 metrics
         if metrics_dict.get('fscore_c') is not None:
             metrics_fc = [
-                model_name, "Fc", f"{metrics_dict['acc_c']:.4f}", f"{metrics_dict['prec_t']:.4f}", f"{metrics_dict['rec_e']:.4f}", f"{metrics_dict['fscore_c']:.4f}",f"{metrics_dict.get('auroc', 'N/A'):.4f}", "-"
+                model_name, "Fc", f"{metrics_dict['acc_c']:.4f}", f"{metrics_dict['prec_t']:.4f}", f"{metrics_dict['rec_e']:.4f}", f"{metrics_dict['fscore_c']:.4f}",f"{metrics_dict.get('auroc_c', 'N/A'):.4f}", "-"
             ]
         else:
             metrics_fc = [model_name, "Fc", "N/A", "N/A", "N/A", "N/A", "-"]
@@ -751,22 +929,43 @@ def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test
                 continue  # Skip if score is not provided
             # Prepare additional arguments for threshold_and_predict
             thres_args = {}
-            if thres_method == 'top_k_time':
-                thres_args['score_t_test_and_train'] = combined_scores[score_type]
+            if thres_method == 'top_k_time' or thres_method == 'best_f1_test':
+                thres_args['score_t_test_and_train'] = None
             # If combined_scores[score_type] is None, threshold_and_predict should handle it
+            if thres_method == 'best_f1_test':
+                # Apply threshold and predict
+                thres, pred_labels, avg_prec, auroc ,test_anom_frac= threshold_and_predict(
+                    score, gt, true_events=true_events, logger=None,
+                    thres_method=thres_method,point_adjust=False,composite_best_f1=False,return_auc=True,**thres_args
+                )
 
-            # Apply threshold and predict
-            thres, pred_labels, avg_prec, auroc ,test_anom_frac= threshold_and_predict(
-                score, gt, true_events=true_events, logger=None,
-                thres_method=thres_method, return_auc=True, **thres_args
-            )
+                thres, pred_labels_fpa, avg_prec, auroc_pa ,test_anom_frac= threshold_and_predict(
+                    score, gt, true_events=true_events, logger=None,
+                    thres_method=thres_method,point_adjust=True,composite_best_f1=False,return_auc=True,**thres_args
+                )
 
-            # Evaluate metrics
-            eval_metrics = evaluate_metrics(gt, pred_labels, auroc, seq_len=seq_len)
+                thres, pred_labels_fc, avg_prec, auroc_c ,test_anom_frac= threshold_and_predict(
+                    score, gt, true_events=true_events, logger=None,
+                    thres_method=thres_method,point_adjust=False,composite_best_f1=True,return_auc=True,**thres_args
+)
+                eval_metrics = evaluate_metrics(gt, pred_labels, auroc, pred_labels_fpa, pred_labels_fc, auroc_pa, auroc_c, seq_len=seq_len)
 
+                # Store metrics
+                method_metrics[f'{score_type}_metrics_{thres_method}'] = eval_metrics
+                
+            else:
+                # Apply threshold and predict
+                thres, pred_labels, avg_prec, auroc ,test_anom_frac= threshold_and_predict(
+                    score, gt, true_events=true_events, logger=None,
+                    thres_method=thres_method,return_auc=True,**thres_args
+                )
+                # Evaluate metrics
+                eval_metrics = evaluate_metrics(gt, pred_labels, auroc, seq_len=seq_len)
+                print(f"thres:{thres}")
+                
             # Store metrics
-            method_metrics[f'{score_type}_metrics_{thres_method}'] = eval_metrics
-
+                method_metrics[f'{score_type}_metrics_{thres_method}'] = eval_metrics
+            
         metrics[f'metrics_{thres_method}'] = method_metrics
 
     return metrics, test_anom_frac
