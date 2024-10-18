@@ -1,20 +1,12 @@
 from data_provider.data_factory import data_provider, get_events
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, visual, evaluate_metrics, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics, plot_loss, plot_memory
-from utils.metrics import metric
+from utils.tools import EarlyStopping, adjust_learning_rate, write_to_csv, get_dynamic_scores, get_gaussian_kernel_scores, compute_metrics, plot_loss, plot_memory, fit_distributions, get_scores_channelwise
 import torch
 import torch.nn as nn
 from torch import optim
 import os
 import time
-import warnings
 import numpy as np
-from utils.augmentation import run_augmentation,run_augmentation_single
-from sklearn.metrics import precision_recall_fscore_support
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import confusion_matrix
-
-warnings.filterwarnings('ignore')
 
 class Exp_Anomaly_Enc_Dec(Exp_Basic):
     def __init__(self, args):
@@ -38,7 +30,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
     def _select_criterion(self):
         criterion = nn.MSELoss()
         return criterion
-    
+
     def get_events(self, y_test):
         events = get_events(y_test)
         return events
@@ -74,9 +66,7 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
-
                 loss = criterion(pred, true)
-
                 total_loss.append(loss.item())
         self.model.train()
         return total_loss
@@ -84,7 +74,6 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
-        #test_data, test_loader = self._get_data(flag='test')
         train_energy = []
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -194,8 +183,12 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
         train_energy = np.array(train_energy)
-        train_energy = np.mean(train_energy, axis=-1)
-        train_energy = train_energy.flatten() 
+        
+        # Get the shape dynamically
+        shape = train_energy.shape
+        dim1, dim2, dim3, dim4 = shape
+        train_scores_tc = train_energy.reshape(dim1 * dim2 * dim3, dim4)
+        
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
@@ -208,9 +201,9 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         
         train_end_time = time.time()
         train_duration = train_end_time - training_start_time        
-        return self.model, avg_train_loss, avg_vali_loss, train_duration, train_energy, metrics['allocated_memory'],  metrics['reserved_memory']
+        return self.model, avg_train_loss, avg_vali_loss, train_duration, train_scores_tc, metrics['allocated_memory'],  metrics['reserved_memory']
 
-    def test(self, setting,avg_train_loss, avg_vali_loss,train_duration, train_scores, avg_allocated_memory_train, avg_reserved_memory_train, test=0):
+    def test(self, setting,avg_train_loss, avg_vali_loss,train_duration, train_scores_tc, avg_allocated_memory_train, avg_reserved_memory_train, test=0):
         test_data, test_loader = self._get_data(flag='test')
 
         test_start_time = time.time()
@@ -302,12 +295,10 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         preds=np.array(preds)
         #(total_batches, batch_size, pred_len, num_channels)
         test_scores = np.array(test_scores)
-        #(total_batches, batch_size, pred_len), compute mean over the channels
-        test_scores = test_scores.mean(axis=-1) 
-        #(total_batches * batch_size * pred_len)
-        test_scores = test_scores.flatten()
-        #Result: All anomaly scores in a single 1D array, mean over the channels
-
+        shape = test_scores.shape 
+        dim1, dim2, dim3, dim4 = shape
+        test_scores_tc = test_scores.reshape(dim1 * dim2 * dim3, dim4)
+        
         preds = np.array(preds)
         trues = np.array(trues)
 
@@ -335,20 +326,37 @@ class Exp_Anomaly_Enc_Dec(Exp_Basic):
         test_duration = test_end_time - test_start_time
         total_time = train_duration + test_duration
 
-        true_events=self.get_events(gt)
         gt = torch.stack(labels, dim=0)
         gt = gt.flatten()
+        true_events=self.get_events(gt)
 
         if isinstance(gt, torch.Tensor):
             gt = gt.cpu().numpy()
 
-        score_t_test_dyn, _, score_t_train_dyn, _ =  get_dynamic_scores(None, None, train_scores,test_scores, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
-        #input only scores with channels and time-points
-        score_t_test_dyn_gauss_conv, _ = get_gaussian_kernel_scores(test_scores,None,self.args.kernel_sigma)
+        distributions_dic = fit_distributions(
+            distr_par_file="distr_params.pkl",
+            distr_names=["univar_gaussian"],
+            predictions_dic={
+                "train_raw_scores": train_scores_tc
+            }
+        )
 
-        score_t_train_dyn_gauss_conv, _ = get_gaussian_kernel_scores(train_scores,None,self.args.kernel_sigma)
+        # Compute anomaly scores
+        train_ano_scores, val_ano_scores, test_ano_scores, train_prob_scores, val_prob_scores, test_prob_scores = get_scores_channelwise(
+            distr_params=distributions_dic['univar_gaussian'],
+            train_raw_scores=train_scores_tc,
+            test_raw_scores=test_scores_tc,
+            val_raw_scores=None,
+            logcdf=False
+        )
+
+        score_t_test_dyn, score_tc_test_dyn, score_t_train_dyn, score_tc_train_dyn =  get_dynamic_scores(train_scores_tc, test_scores_tc, None,None, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
         
-        eval_metrics, anomaly_ratio = compute_metrics(test_scores, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_scores, score_t_train_dyn, score_t_train_dyn_gauss_conv)
+        score_t_test_dyn_gauss_conv, score_tc_test_dyn_gauss_conv = get_gaussian_kernel_scores(None,score_tc_test_dyn,self.args.kernel_sigma)
+
+        score_t_train_dyn_gauss_conv, score_tc_train_dyn_gauss_conv = get_gaussian_kernel_scores(None,score_tc_train_dyn,self.args.kernel_sigma)
+        
+        eval_metrics, anomaly_ratio = compute_metrics(test_ano_scores, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_ano_scores, score_t_train_dyn, score_t_train_dyn_gauss_conv)
 
         #transform loss & memory usage into scalar
         avg_train_loss = np.mean(avg_train_loss)

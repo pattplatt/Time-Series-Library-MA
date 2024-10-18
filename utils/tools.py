@@ -361,10 +361,15 @@ def threshold_and_predict(
     else:
         config = default_thres_config[thres_method]
         
-    if score_t_test_and_train is not None:
+    #print("type(score_t_test_and_train):",type(score_t_test_and_train))  # Check the type
+    if score_t_test_and_train is not None:        
         test_anom_frac = (np.sum(y_test)) / len(score_t_test_and_train)
+        #print(f"if: test_anom_frac:{test_anom_frac}")
+        #print()
     else:
         test_anom_frac = (np.sum(y_test)) / len(y_test)
+        #print(f"else: test_anom_frac:{test_anom_frac}")
+        #print()
         
     auroc = None
     avg_prec = None
@@ -471,6 +476,7 @@ def threshold_and_predict(
             )
         )
         return None, None
+    
     if return_auc:
         avg_prec = average_precision_score(y_test, score_t_test)
         auroc = roc_auc_score(y_test, score_t_test)
@@ -745,7 +751,7 @@ def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test
                 continue  # Skip if score is not provided
             # Prepare additional arguments for threshold_and_predict
             thres_args = {}
-            if thres_method == 'top_k_time' or (thres_method == 'tail_prob' and score_type == 'default'):
+            if thres_method == 'top_k_time':
                 thres_args['score_t_test_and_train'] = combined_scores[score_type]
             # If combined_scores[score_type] is None, threshold_and_predict should handle it
 

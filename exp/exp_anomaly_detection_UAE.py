@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider, get_events
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics, plot_loss, plot_memory
+from utils.tools import EarlyStopping, adjust_learning_rate, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics, plot_loss, plot_memory, fit_distributions, get_scores_channelwise
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 import torch
@@ -77,21 +77,22 @@ def fit_one_channel(setting, channel_num, path, args, device):
         print(f"Validating channel {channel_num}")
 
         with torch.no_grad():
-            try:
-                # Fetch the next validation batch
-                batch_x_val, _ = next(vali_iter)
-            except StopIteration:
-                # If we reach the end of the validation set, reinitialize the iterator
-                vali_iter = iter(vali_loader)
-                batch_x_val, _ = next(vali_iter)
+            for i in range(30):
+                try:
+                    # Fetch the next validation batch
+                    batch_x_val, _ = next(vali_iter)
+                except StopIteration:
+                    # If we reach the end of the validation set, reinitialize the iterator
+                    vali_iter = iter(vali_loader)
+                    batch_x_val, _ = next(vali_iter)
 
-            batch_x_val = batch_x_val[:, :, channel_num:channel_num+1].float().to(device)
-            outputs = model(batch_x_val, None, None, None)
-            f_dim = -1 if args.features == 'MS' else 0
-            outputs = outputs[:, :, f_dim:]
-            vali_loss = criterion(outputs, batch_x_val)
-            vali_loss_array.append(vali_loss.item())
-            outputs = outputs.detach()
+                batch_x_val = batch_x_val[:, :, channel_num:channel_num+1].float().to(device)
+                outputs = model(batch_x_val, None, None, None)
+                f_dim = -1 if args.features == 'MS' else 0
+                outputs = outputs[:, :, f_dim:]
+                vali_loss = criterion(outputs, batch_x_val)
+                vali_loss_array.append(vali_loss.item())
+                outputs = outputs.detach()
             
         model.train()
         early_stopping(vali_loss, model, path)
@@ -154,7 +155,7 @@ def predict_one_channel(setting, channel_num, saved_array_path, args, device):
 
             score = score.view(-1).cpu().numpy()
             train_energy[idx:idx + batch_size*args.seq_len] = score
-            idx += batch_size
+            idx += batch_size * args.seq_len
             del batch_x, outputs, score  # Free up memory
             torch.cuda.empty_cache()
 
@@ -176,7 +177,8 @@ def predict_one_channel(setting, channel_num, saved_array_path, args, device):
             metrics['loss'].append(criterion(outputs.cpu(), batch_x.cpu()).item())                
             test_energy[idx:idx + batch_size*args.seq_len] = score
             test_labels[idx:idx + batch_size*args.seq_len] = batch_y.view(-1).cpu().numpy()
-            idx += batch_size
+
+            idx += batch_size * args.seq_len
             
             allocated_memory = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # In MB
             reserved_memory = torch.cuda.max_memory_reserved(device) / (1024 ** 2)  # In MB
@@ -247,7 +249,6 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
                 self.args,
                 self.device,
             )
-            
             results.append(pool.apply_async(fit_one_channel, args=args))
             
         return_values = [result.get() for result in results]
@@ -266,10 +267,11 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
             total_vali_loss.append(val_l)
             iters = iters
 
-        avg_train_loss= np.mean(np.array(total_train_loss),axis=0)
+        avg_train_loss= np.mean(np.array(total_train_loss),axis=0)        
         plot_loss(avg_train_loss, os.path.join('./test_results/', setting), 'training_loss_plot.png', 'Train')
-        avg_val_loss=np.mean(np.array(total_vali_loss))
-        plot_loss(avg_train_loss, os.path.join('./test_results/', setting), 'vali_loss_plot.png', 'Validation')
+        avg_val_loss=np.mean(np.array(total_vali_loss),axis=0)
+
+        plot_loss(avg_val_loss, os.path.join('./test_results/', setting), 'vali_loss_plot.png', 'Validation')
         avg_allocated_memory= np.mean(np.array(total_allocated_memory),axis=0)
         avg_reserved_memory= np.mean(np.array(total_reserved_memory),axis=0)
         
@@ -298,7 +300,7 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
         total_allocated_memory, total_reserved_memory = [],[]
 
         ctx = mp.get_context('spawn')
-        pool = ctx.Pool(processes=30)
+        pool = ctx.Pool(processes=40)
         results=[]
         test_start_time = time.time()
         for channel_num in range(self.args.enc_in):
@@ -326,7 +328,6 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
 
         avg_test_loss= np.mean(np.array(test_losses),axis=0)
         plot_loss(avg_test_loss, os.path.join('./test_results/', setting),'test_loss_plot.png', "Test")
-
         
         avg_allocated_memory= np.mean(np.array(total_allocated_memory),axis=0)
         avg_reserved_memory= np.mean(np.array(total_reserved_memory),axis=0)
@@ -345,34 +346,56 @@ class Exp_Anomaly_Detection_UAE(Exp_Basic):
             train_energy_arrays.append(train_energy)
             print(f"Loaded {train_energy_array_filename} with shape {train_energy.shape}")
             
-            combined_test_array_filename = f"test_energy_channel_{i}.npy"  # Corrected filename formatting
-            test_energy = np.load(os.path.join(saved_array_path, combined_test_array_filename))
+            test_array_filename = f"test_energy_channel_{i}.npy"  # Corrected filename formatting
+            test_energy = np.load(os.path.join(saved_array_path, test_array_filename))
             test_energy_arrays.append(test_energy)
-            print(f"Loaded {combined_test_array_filename} with shape {test_energy.shape}")            
-        #Take anomaly scores from each row and combine them with average into single anomaly score
-        stacked_train_energy_array = np.stack(train_energy_arrays, axis=0)
-        stacked_combined_test_array = np.stack(test_energy_arrays, axis=0)
+            print(f"Loaded {test_array_filename} with shape {test_energy.shape}")            
+        #Take anomaly scores from each row and combine them
+        train_scores_tc = np.stack(train_energy_arrays, axis=0).T
+        test_scores_tc = np.stack(test_energy_arrays, axis=0).T
 
-        avg_train_energy = np.mean(stacked_train_energy_array,0)
-        avg_test_energy = np.mean(stacked_combined_test_array,0)
-
+        print(f"train_scores_tc:{train_scores_tc.shape}")
+        print(f"test_scores_tc:{test_scores_tc.shape}")
+        
+        #max_train_energy = np.max(stacked_train_energy_array,0)
+        #max_test_energy = np.max(stacked_test_energy_array,0)
+        
         test_labels = self.test_labels
         test_labels = np.array(test_labels)
         gt = test_labels.astype(int)
+
         true_events=self.get_events(gt)
-        #get dynamic kernel scores
-        score_t_test_dyn, _, score_t_train_dyn, _ = get_dynamic_scores(None, None, avg_train_energy,avg_test_energy, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
-        #get dynamic scores
-        score_t_test_dyn_gauss_conv, _ = get_gaussian_kernel_scores(avg_test_energy,None,self.args.kernel_sigma)
+        
+        distributions_dic = fit_distributions(
+            distr_par_file="distr_params.pkl",
+            distr_names=["univar_gaussian"],
+            predictions_dic={
+                "train_raw_scores": train_scores_tc
+            }
+        )
 
-        score_t_train_dyn_gauss_conv, _ = get_gaussian_kernel_scores(avg_train_energy,None,self.args.kernel_sigma)
+        # Compute anomaly scores
+        train_ano_scores, val_ano_scores, test_ano_scores, train_prob_scores, val_prob_scores, test_prob_scores = get_scores_channelwise(
+            distr_params=distributions_dic['univar_gaussian'],
+            train_raw_scores=train_scores_tc,
+            test_raw_scores=test_scores_tc,
+            val_raw_scores=None,
+            logcdf=False
+        )
 
-        eval_metrics, anomaly_ratio = compute_metrics(avg_test_energy, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , avg_train_energy, score_t_train_dyn, score_t_train_dyn_gauss_conv)
+        score_t_test_dyn, score_tc_test_dyn, score_t_train_dyn, score_tc_train_dyn =  get_dynamic_scores(train_scores_tc, test_scores_tc, None,None, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
+        #input only scores with channels and time-points
+        score_t_test_dyn_gauss_conv, score_tc_test_dyn_gauss_conv = get_gaussian_kernel_scores(None,score_tc_test_dyn,self.args.kernel_sigma)
+
+        score_t_train_dyn_gauss_conv, score_tc_train_dyn_gauss_conv = get_gaussian_kernel_scores(None,score_tc_train_dyn,self.args.kernel_sigma)
+        
+        eval_metrics, anomaly_ratio = compute_metrics(test_ano_scores, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_ano_scores, score_t_train_dyn, score_t_train_dyn_gauss_conv)
 
         #transform loss & memory usage into scalar
         avg_train_loss = np.mean(avg_train_loss)
         avg_test_loss= np.mean(avg_test_loss)
-
+        avg_val_loss= np.mean(avg_val_loss)
+        
         total_allocated_memory_usage = np.concatenate([avg_allocated_memory,avg_allocated_memory_train])
         total_reserved_memory_usage = np.concatenate([avg_reserved_memory,avg_reserved_memory_train])
 
