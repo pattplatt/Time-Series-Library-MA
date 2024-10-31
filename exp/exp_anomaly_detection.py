@@ -1,22 +1,13 @@
 from data_provider.data_factory import data_provider, get_events
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, adjustment, write_to_csv, get_dynamic_scores, threshold_and_predict, get_gaussian_kernel_scores, compute_metrics, plot_loss, plot_memory, fit_distributions, get_scores_channelwise
-from sklearn.metrics import precision_recall_fscore_support
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import confusion_matrix
-import torch.multiprocessing
-torch.multiprocessing.set_sharing_strategy('file_system')
+from utils.tools import EarlyStopping, adjust_learning_rate, write_to_csv, get_dynamic_scores, get_gaussian_kernel_scores, compute_metrics, plot_loss, plot_memory, fit_distributions, get_scores_channelwise
 import torch
 import torch.nn as nn
 from torch import optim
 import os
 import time
-import warnings
 import numpy as np
 from datetime import datetime
-import csv
-
-warnings.filterwarnings('ignore')
 
 class Exp_Anomaly_Detection(Exp_Basic):
     def __init__(self, args):
@@ -51,14 +42,11 @@ class Exp_Anomaly_Detection(Exp_Basic):
         with torch.no_grad():
             for i, (batch_x, _) in enumerate(vali_loader):
                 batch_x = batch_x.float().to(self.device)
-
                 outputs = self.model(batch_x, None, None, None)
-
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, :, f_dim:]
                 pred = outputs.detach().cpu()
                 true = batch_x.detach().cpu()
-
                 loss = criterion(pred, true)
                 total_loss.append(loss)
         self.model.train()
@@ -99,16 +87,12 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 iter_count += 1
                 total_iters +=1
                 model_optim.zero_grad()
-
                 batch_x = batch_x.float().to(self.device)
-
                 outputs = self.model(batch_x, None, None, None)
-
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, :, f_dim:]
                 loss = criterion(outputs, batch_x)
                 train_loss.append(loss.item())
-
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
@@ -176,28 +160,15 @@ class Exp_Anomaly_Detection(Exp_Basic):
         with torch.no_grad():
             for i, (batch_x, batch_y) in enumerate(train_loader):
                 batch_x = batch_x.float().to(self.device)
-                # reconstruction
                 outputs = self.model(batch_x, None, None, None)
-                # criterion
-                print("outputs:",outputs.shape)
                 score = self.anomaly_criterion(batch_x, outputs)
-                print("score:",score.shape)
                 score = score.detach().cpu().numpy()
                 train_score.append(score)
 
         train_score = np.concatenate(train_score, axis=0)
-        #attens_energy=np.array(attens_energy)
-        print(f"train_score:{train_score.shape}")
-        
-        # Get the shape dynamically
-        shape = train_score.shape  # This will return a tuple (77, 128, 30, 123)
-        # Use variables to represent the dimensions
+        shape = train_score.shape
         dim1, dim2, dim3 = shape
-        # Reshape the array: combine the first three dimensions and keep the last dimension
         train_scores_tc = train_score.reshape(dim1 * dim2, dim3)
-
-        #train_energy = np.array(attens_energy)
-        print(f"train_scores_tc:{train_scores_tc.shape}")
 
         # (2) find the threshold
         test_score = []
@@ -225,15 +196,10 @@ class Exp_Anomaly_Detection(Exp_Basic):
         
         test_score = np.concatenate(test_score, axis=0)
 
-        # Get the shape dynamically
-        shape = test_score.shape  # This will return a tuple (77, 128, 30, 123)
-        # Use variables to represent the dimensions
+        shape = test_score.shape
         dim1, dim2, dim3 = shape
-        # Reshape the array: combine the first three dimensions and keep the last dimension
         test_scores_tc = test_score.reshape(dim1 * dim2, dim3)
         
-        print(f"test_scores_tc:{test_scores_tc.shape}")
-                
         test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
         test_labels = np.array(test_labels)
         gt = test_labels.astype(int)
@@ -246,6 +212,13 @@ class Exp_Anomaly_Detection(Exp_Basic):
         #get true events from dataset
         true_events=self.get_events(gt)
         
+        # Create a function to save the time measurements
+        def log_time_measurement(message, duration, filename="time_measurements.txt"):
+            with open(test_results_path+"/"+filename, "a") as file:
+                file.write(f"{message}: {duration:.4f} seconds\n")
+                
+        start_time = time.time()
+        print("fit_distributions:")
         distributions_dic = fit_distributions(
             distr_par_file="distr_params.pkl",
             distr_names=["univar_gaussian"],
@@ -254,23 +227,60 @@ class Exp_Anomaly_Detection(Exp_Basic):
             }
         )
         
+        end_time = time.time()
+        duration = end_time - start_time
+        log_time_measurement("fit_distributions", duration)
+        
+        print("get_scores_channelwise:")
+        start_time = time.time()
+
         # Compute anomaly scores
         train_ano_scores, val_ano_scores, test_ano_scores, train_prob_scores, val_prob_scores, test_prob_scores = get_scores_channelwise(
             distr_params=distributions_dic['univar_gaussian'],
             train_raw_scores=train_scores_tc,
             test_raw_scores=test_scores_tc,
             val_raw_scores=None,
-            logcdf=True
+            logcdf=False
         )
-
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        log_time_measurement("get_scores_channelwise", duration)
+        
+        
+        print("get dyn scores:")
+        start_time = time.time()
+        
         score_t_test_dyn, score_tc_test_dyn, score_t_train_dyn, score_tc_train_dyn =  get_dynamic_scores(train_scores_tc, test_scores_tc, None,None, long_window=self.args.d_score_long_window, short_window=self.args.d_score_short_window)
-        #input only scores with channels and time-points
+
+        end_time = time.time()
+        duration = end_time - start_time
+        log_time_measurement("get_dynamic_scores", duration)
+        
+        start_time = time.time()
+        print("get gauss dyn scores:")
         score_t_test_dyn_gauss_conv, score_tc_test_dyn_gauss_conv = get_gaussian_kernel_scores(None,score_tc_test_dyn,self.args.kernel_sigma)
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        log_time_measurement("get_gaussian_kernel_scores_test", duration)
+        
+        print("get gauss dyn scores:")
+        start_time = time.time()
 
         score_t_train_dyn_gauss_conv, score_tc_train_dyn_gauss_conv = get_gaussian_kernel_scores(None,score_tc_train_dyn,self.args.kernel_sigma)
-
-        #test and train scores
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        log_time_measurement("get_gaussian_kernel_scores_train", duration)
+        
+        start_time = time.time()
+        print("compute metrics:")
         eval_metrics, anomaly_ratio = compute_metrics(test_ano_scores, gt, true_events,score_t_test_dyn, score_t_test_dyn_gauss_conv, self.args.seq_len , train_ano_scores, score_t_train_dyn, score_t_train_dyn_gauss_conv)
+
+        end_time = time.time()
+        duration = end_time - start_time
+        log_time_measurement("compute_metrics", duration)
         #transform loss & memory usage into scalar
         avg_train_loss = np.mean(avg_train_loss)
         avg_test_loss= np.mean(test_metrics['loss'])
