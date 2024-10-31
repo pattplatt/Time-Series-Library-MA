@@ -242,5 +242,5 @@ if __name__ == '__main__':
 
         exp = Exp(args)  # set experiments
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-        exp.test(setting, test=1)
+        exp.test(setting,avg_train_loss=None, avg_vali_loss=None, train_duration=None,avg_allocated_memory_train=None, avg_reserved_memory_train=None,test=1)
         torch.cuda.empty_cache()
