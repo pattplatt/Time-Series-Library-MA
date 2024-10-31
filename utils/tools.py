@@ -24,6 +24,7 @@ from sklearn.metrics import (
     confusion_matrix,
     precision_recall_fscore_support
 )
+from tqdm import tqdm
 plt.switch_backend('agg')
 
 def adjust_learning_rate(optimizer, epoch, args):
@@ -74,13 +75,11 @@ class EarlyStopping:
         torch.save(model.state_dict(), path + '/' + 'checkpoint.pth')
         self.val_loss_min = val_loss
 
-
 class dotdict(dict):
     """dot.notation access to dictionary attributes"""
     __getattr__ = dict.get
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
-
 
 class StandardScaler():
     def __init__(self, mean, std):
@@ -166,12 +165,12 @@ def get_scores_channelwise(distr_params, train_raw_scores, val_raw_scores, test_
 
 # Computes (when not already saved) parameters for scoring distributions
 def fit_distributions(distr_par_file, distr_names, predictions_dic, val_only=False):
-    #try:
-        #with open(distr_par_file, 'rb') as file:
-            #distributions_dic = pickle.load(file)
-    #except:
-        #print("not found")
-    distributions_dic = {}
+    try:
+        with open(distr_par_file, 'rb') as file:
+            distributions_dic = pickle.load(file)
+    except:
+        print("not found")
+        distributions_dic = {}
     for distr_name in distr_names:
         if distr_name in distributions_dic.keys():
             continue
@@ -269,7 +268,6 @@ def adjustment(gt, pred):
         if anomaly_state:
             pred[i] = 1
     return gt, pred
-
 
 def cal_accuracy(y_pred, y_true):
     return np.mean(y_pred == y_true)
@@ -461,16 +459,90 @@ def get_composite_fscore_raw(pred_labels, true_events, y_test, return_prec_rec=F
         return prec_t, rec_e, fscore_c
     return fscore_c
 
-def get_composite_fscore_from_scores(score_t_test, thres, true_events, prec_t, return_prec_rec=False):
-    pred_labels = score_t_test > thres
-    tp = np.sum([pred_labels[start:end + 1].any() for start, end in true_events.values()])
-    fn = len(true_events) - tp
-    rec_e = tp/(tp + fn)
-    fscore_c = 2 * rec_e * prec_t / (rec_e + prec_t)
-    if prec_t == 0 and rec_e == 0:
-        fscore_c = 0
+def get_composite_fscore_from_scores(score_t_test, true_events, thresholds, precs_t,return_prec_rec=False):
+    
+    print(f"len thresholds:{len(thresholds)}")
+    print(f"len precs_t:{len(precs_t)}")
+    
+    thresholds = thresholds[:len(precs_t)]
+    # Shape: (num_thresholds, num_samples)
+    pred_labels_matrix = score_t_test[None, :] > thresholds[:, None]
+    #pred_labels = score_t_test > thres
+    # Step 2: Initialize true positives array
+    tp_array = np.zeros(len(thresholds), dtype=int)
+
+    # Convert true_events to a list for vectorization
+    event_indices = list(true_events.values())
+    # Process all events
+    for start, end in tqdm(event_indices, desc="Processing events", unit="event"):
+        # Extract predictions for the event window across all thresholds
+        event_preds = pred_labels_matrix[:, start:end + 1]  # Shape: (num_thresholds, event_length)
+        # Check if any prediction is True within the event window
+        tp_event = event_preds.any(axis=1)  # Shape: (num_thresholds,)
+        # Accumulate true positives
+        tp_array += tp_event.astype(int)
+        
+    
+    fn_array = len(true_events) - tp_array
+    print(f"len fn_array{len(fn_array)}")
+    rec_e = tp_array / (tp_array + fn_array)
+    print(f"len tp_array{len(tp_array)}")
+    
+    #tp = np.sum([pred_labels[start:end + 1].any() for start, end in true_events.values()])
+    #fn = len(true_events) - tp
+    #rec_e = tp/(tp + fn)
+    
+    precs_t = precs_t[:-1]  # Now `precs_t` has the same length as `thresholds`
+
+    fscore_c = 2 * rec_e * precs_t / (rec_e + precs_t)
+    fscore_c = np.nan_to_num(fscore_c)
+    
+    print(f"fscore_c:{np.array(fscore_c).shape}")
+    
+    #if prec_t == 0 and rec_e == 0:
+        #fscore_c = 0
     if return_prec_rec:
         return prec_t, rec_e, fscore_c
+    return fscore_c
+
+def compute_fscore_in_batches(score_t_test, thresholds, precs_t, true_events, batch_size):
+    num_thresholds = len(thresholds)
+    fscore_c = np.zeros(num_thresholds)
+    rec_e_array = np.zeros(num_thresholds)
+    tp_array = np.zeros(num_thresholds, dtype=int)
+
+    # Add a progress bar for the batches
+    batch_indices = range(0, num_thresholds, batch_size)
+    for start_idx in tqdm(batch_indices, desc="Processing batches"):
+        end_idx = min(start_idx + batch_size, num_thresholds)
+
+        thresholds_batch = thresholds[start_idx:end_idx]
+        precs_t_batch = precs_t[start_idx:end_idx]
+
+        # Compute predictions for the batch
+        pred_labels_matrix = score_t_test[None, :] > thresholds_batch[:, None]
+
+        # Initialize true positives for the batch
+        tp_batch = np.zeros(len(thresholds_batch), dtype=int)
+
+        # Add a progress bar for processing events
+        for start, end in tqdm(true_events.values(), desc="Processing events", leave=False):
+            event_preds = pred_labels_matrix[:, start:end + 1]
+            tp_event = event_preds.any(axis=1)
+            tp_batch += tp_event.astype(int)
+
+        # Compute recall and F-score for the batch
+        fn_batch = len(true_events) - tp_batch
+        rec_e_batch = tp_batch / (tp_batch + fn_batch)
+
+        fscore_c_batch = 2 * rec_e_batch * precs_t_batch / (rec_e_batch + precs_t_batch)
+        fscore_c_batch = np.nan_to_num(fscore_c_batch)
+
+        # Store batch results
+        fscore_c[start_idx:end_idx] = fscore_c_batch
+        rec_e_array[start_idx:end_idx] = rec_e_batch
+        tp_array[start_idx:end_idx] = tp_batch
+
     return fscore_c
 
 @njit
@@ -560,6 +632,7 @@ def threshold_and_predict(
         pred_labels = score_t_test > opt_thres
 
     elif thres_method == "best_f1_test" and composite_best_f1:
+        
         prec, rec, thresholds = precision_recall_curve(y_test, score_t_test)
         precs_t = prec        
         # Prepare args_list
@@ -568,8 +641,16 @@ def threshold_and_predict(
         #compute_fscore_c_partial = partial(compute_fscore_c, score_t_test=score_t_test, true_events=true_events)
         #with ProcessPoolExecutor() as executor:
          #   fscores_c = list(executor.map(compute_fscore_c_partial, args_list))
-
-        fscores_c = [get_composite_fscore_from_scores(score_t_test, thres, true_events,prec_t) for thres, prec_t in zip(thresholds, precs_t)]
+        print("Begin best Fc-Score computation")
+        #fscores_c = [get_composite_fscore_from_scores(score_t_test, thres, true_events,prec_t) for thres, prec_t in zip(thresholds, precs_t)]
+        
+        #fscores_c = [
+         #   get_composite_fscore_from_scores(score_t_test, true_events, thresholds,precs_t)
+        #]
+        fscores_c = [
+            compute_fscore_in_batches(score_t_test, thresholds, precs_t, true_events, 1000)
+        ]
+        
         try:
             opt_thres = thresholds[np.nanargmax(fscores_c)]
         except:
@@ -817,8 +898,7 @@ def write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_resu
     # Prepare data to write: collect metrics into a dictionary
     data_to_write = {}
 
-    # Collect metrics from the provided metrics dictionary
-    # and compute per-threshold-method mean scores
+    # Collect metrics from the provided metrics dictionary and compute per-threshold-method mean scores
     overall_fscores = []
     overall_aurocs = []
 
@@ -861,7 +941,7 @@ def write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_resu
     # Compute overall mean fscore and auroc per model (over all methods and score types)
     overall_mean_fscore = sum(overall_fscores) / len(overall_fscores) if overall_fscores else None
     overall_mean_auroc = sum(overall_aurocs) / len(overall_aurocs) if overall_aurocs else None
-    # Format overall mean values to 5 decimal points
+    
     if overall_mean_fscore is not None:
         data_to_write['mean_fscore'] = f"{overall_mean_fscore:.5f}"
     else:
@@ -870,9 +950,6 @@ def write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_resu
         data_to_write['mean_auroc'] = f"{overall_mean_auroc:.5f}"
     else:
         data_to_write['mean_auroc'] = "N/A"
-
-    # Now, prepare a DataFrame with metrics as rows and models as columns
-    # If the CSV file exists, read it
     if os.path.isfile(metrics_csv_file):
         df = pd.read_csv(metrics_csv_file, index_col=0)
     else:
@@ -883,8 +960,6 @@ def write_f_score_metrics(benchmark_id, model_name, model_id, metrics, test_resu
 
     # Combine with existing DataFrame
     df = df.join(model_df, how='outer')
-
-    # Save the DataFrame to CSV
     df.to_csv(metrics_csv_file)
 
 def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test_dyn_gauss_conv, seq_len,train_energy=None,  score_t_train_dyn=None,score_t_train_dyn_gauss_conv=None):
@@ -972,9 +1047,7 @@ def compute_metrics(test_energy, gt, true_events, score_t_test_dyn, score_t_test
 
 def plot_loss(metrics, save_dir, file_name='train_loss_plot.png', mode="Train"):
 
-    # Check if input is a dictionary
     if isinstance(metrics, dict):
-        # Extract iterations and loss from the metrics dictionary
         if 'iters' not in metrics or 'loss' not in metrics:
             raise ValueError("Dictionary must contain 'iters' and 'loss' keys.")
         iters = metrics['iters']
@@ -988,32 +1061,25 @@ def plot_loss(metrics, save_dir, file_name='train_loss_plot.png', mode="Train"):
     else:
         raise TypeError("Input must be either a dictionary or a list.")
     
-    # Create a plot
     plt.figure(figsize=(10, 6))
     plt.plot(iters, loss, label=f'{mode} Loss', color='blue', linewidth=2)
     
-    # Adding labels and title
     plt.xlabel('Iterations')
     plt.ylabel('Loss')
     plt.title(f'{mode} Loss over Iterations')
     plt.legend()
     plt.grid(True)
 
-    # Ensure save directory exists
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    # Save the plot to the specified directory
     save_path = os.path.join(save_dir, file_name)
     plt.savefig(save_path)
-
-    # Close the plot to free up memory
     plt.close()
 
     print(f"Plot saved to {save_path}")
 
 def plot_memory(metrics,save_dir, file_name='train_memory_plot.png', mode='Train', avg_reserved_memory=None):
-    # Check if input is a dictionary
     if isinstance(metrics, dict):
         # Extract iterations and loss from the metrics dictionary
         if 'iters' not in metrics or 'allocated_memory' not in metrics or 'reserved_memory' not in metrics:
@@ -1027,28 +1093,22 @@ def plot_memory(metrics,save_dir, file_name='train_memory_plot.png', mode='Train
         iters = list(range(1, len(allocated_memory) + 1))
         reserved_memory = avg_reserved_memory
 
-    # Create a plot
     plt.figure(figsize=(10, 6))
     plt.plot(iters, allocated_memory, label='Allocated memory', color='orange', linewidth=1)
     if reserved_memory is not None:
         plt.plot(iters, reserved_memory, label='Reserved memory', color='purple', linewidth=2)
 
-    # Adding labels and title
     plt.xlabel('Iterations')
     plt.ylabel('Memory usage in MB')
     plt.title(f'{mode}: Memory usage over Iterations')
     plt.legend()
     plt.grid(True)
 
-    # Ensure save directory exists
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    # Save the plot to the specified directory
     save_path = os.path.join(save_dir, file_name)
     plt.savefig(save_path)
-
-    # Close the plot to free up memory
     plt.close()
 
     print(f"Plot saved to {save_path}")
