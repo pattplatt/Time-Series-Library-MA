@@ -746,7 +746,7 @@ class UEAloader(Dataset):
         return len(self.all_IDs)
 
 class WADISegLoader(Dataset):
-    def __init__(self, args, root_path, win_size, step=1, flag="train"):
+    def __init__(self, args, root_path, win_size, step=10, flag="train"):
         self.flag = flag
         self.step = step
         self.win_size = win_size
@@ -815,7 +815,7 @@ class WADISegLoader(Dataset):
                     self.val[:, dim] = (self.val[:, dim] - X_min) / (X_max - X_min)
                 else:
                     self.val[:, dim] = 0
-        
+
     def __len__(self):
 
         if self.flag == "train":
