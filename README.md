@@ -1,6 +1,8 @@
 # Evaluation of Transformers for Multivariate Time-Series Anomaly Detection
 
-Forked from the Time Series Library (TSlib)
+Evaluation of several Transformer Architectures on Multivariate Time-Series Data. 
+
+Forked from the Time Series Library (TSlib): https://github.com/thuml/Time-Series-Library
 TSlib is an open-source library for deep learning researchers, especially for deep time series analysis.
 
 ## Usage
@@ -37,16 +39,3 @@ bash ./scripts/classification/TimesNet.sh
 - Add the model file to the folder `./models`. You can follow the `./models/Transformer.py`.
 - Include the newly added model in the `Exp_Basic.model_dict` of  `./exp/exp_basic.py`.
 - Create the corresponding scripts under the folder `./scripts`.
-
-## Citation
-
-If you find this repo useful, please cite our paper.
-
-```
-@inproceedings{wu2023timesnet,
-  title={TimesNet: Temporal 2D-Variation Modeling for General Time Series Analysis},
-  author={Haixu Wu and Tengge Hu and Yong Liu and Hang Zhou and Jianmin Wang and Mingsheng Long},
-  booktitle={International Conference on Learning Representations},
-  year={2023},
-}
-```
