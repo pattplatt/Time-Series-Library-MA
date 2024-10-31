@@ -1,0 +1,21 @@
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+
+e_layers=5
+d_layers=5
+train_epochs=3
+l_w=100000
+s_w=1
+
+python -u run.py   --task_name enc_dec_anomaly   --is_training 1   --root_path ./dataset/anomaly_detection/WADI/WADI2019_power_transformed  --data_path WADI_train.csv   --model_id WADI_enc_dec_Informer_grid_s_bs_1024   --model Informer   --data WADI_F   --features M   --seq_len 5   --label_len 5   --pred_len 5 --n_heads 8 --d_model 256 --enc_in 123 --e_layers $e_layers --dec_in 123  --d_layers $d_layers --c_out 123 --d_ff 1024 --factor 1   --des 'Exp'   --itr 1 --batch_size 1024 --train_epochs $train_epochs --freq s  --win_mode 'hopping' --benchmark_id enc_dec --devices 3
+
+python -u run.py   --task_name enc_dec_anomaly   --is_training 1   --root_path ./dataset/anomaly_detection/WADI/WADI2019_power_transformed  --data_path WADI_train.csv   --model_id WADI_enc_dec_Informer_grid_s_bs_512  --model Informer   --data WADI_F   --features M   --seq_len 5   --label_len 5   --pred_len 5 --n_heads 8 --d_model 256 --enc_in 123 --e_layers $e_layers --dec_in 123  --d_layers $d_layers --c_out 123 --d_ff 1024 --factor 1   --des 'Exp'   --itr 1 --batch_size 512 --train_epochs $train_epochs --freq s  --win_mode 'hopping' --benchmark_id enc_dec --devices 3
+
+python -u run.py   --task_name enc_dec_anomaly   --is_training 1   --root_path ./dataset/anomaly_detection/WADI/WADI2019_power_transformed  --data_path WADI_train.csv   --model_id WADI_enc_dec_Informer_grid_s_bs_256  --model Informer   --data WADI_F   --features M   --seq_len 5   --label_len 5   --pred_len 5 --n_heads 8 --d_model 256 --enc_in 123 --e_layers $e_layers --dec_in 123  --d_layers $d_layers --c_out 123 --d_ff 1024 --factor 1   --des 'Exp'   --itr 1 --batch_size 256 --train_epochs $train_epochs --freq s  --win_mode 'hopping' --benchmark_id enc_dec --devices 3
+
+python -u run.py   --task_name enc_dec_anomaly   --is_training 1   --root_path ./dataset/anomaly_detection/WADI/WADI2019_power_transformed  --data_path WADI_train.csv   --model_id WADI_enc_dec_Informer_grid_s_bs_128  --model Informer   --data WADI_F   --features M   --seq_len 5   --label_len 5   --pred_len 5 --n_heads 8 --d_model 256 --enc_in 123 --e_layers $e_layers --dec_in 123  --d_layers $d_layers --c_out 123 --d_ff 1024 --factor 1   --des 'Exp'   --itr 1 --batch_size 128 --train_epochs $train_epochs --freq s  --win_mode 'hopping' --benchmark_id enc_dec --devices 3
+
+python -u run.py   --task_name enc_dec_anomaly   --is_training 1   --root_path ./dataset/anomaly_detection/WADI/WADI2019_power_transformed  --data_path WADI_train.csv   --model_id WADI_enc_dec_Informer_grid_s_bs_64  --model Informer   --data WADI_F   --features M   --seq_len 5   --label_len 5   --pred_len 5 --n_heads 8 --d_model 256 --enc_in 123 --e_layers $e_layers --dec_in 123  --d_layers $d_layers --c_out 123 --d_ff 1024 --factor 1   --des 'Exp'   --itr 1 --batch_size 64 --train_epochs $train_epochs --freq s  --win_mode 'hopping' --benchmark_id enc_dec --devices 3
+
+python -u run.py   --task_name enc_dec_anomaly   --is_training 1   --root_path ./dataset/anomaly_detection/WADI/WADI2019_power_transformed  --data_path WADI_train.csv   --model_id WADI_enc_dec_Informer_grid_s_bs_32  --model Informer   --data WADI_F   --features M   --seq_len 5   --label_len 5   --pred_len 5 --n_heads 8 --d_model 256 --enc_in 123 --e_layers $e_layers --dec_in 123  --d_layers $d_layers --c_out 123 --d_ff 1024 --factor 1   --des 'Exp'   --itr 1 --batch_size 32 --train_epochs $train_epochs --freq s  --win_mode 'hopping' --benchmark_id enc_dec --devices 3
+
+python -u run.py   --task_name enc_dec_anomaly   --is_training 1   --root_path ./dataset/anomaly_detection/WADI/WADI2019_power_transformed  --data_path WADI_train.csv   --model_id WADI_enc_dec_Informer_grid_s_bs_16  --model Informer   --data WADI_F   --features M   --seq_len 5   --label_len 5   --pred_len 5 --n_heads 8 --d_model 256 --enc_in 123 --e_layers 5 --dec_in 123  --d_layers 5 --c_out 123 --d_ff 1024 --factor 1   --des 'Exp'   --itr 1 --batch_size 16 --train_epochs 3 --freq s  --win_mode 'hopping' --benchmark_id enc_dec --devices 3
